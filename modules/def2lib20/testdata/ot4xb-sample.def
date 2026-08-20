@@ -1,0 +1,5 @@
+LIBRARY ot4xb
+EXPORTS
+;; minimal subset of ot4xb.def used by TestAlink (functions called by t1.prg)
+     APPINSTANCE =  _APPINSTANCE
+     GETCURRENTPROCESSHANDLE =  _GETCURRENTPROCESSHANDLE
