@@ -1,0 +1,463 @@
+//------------------------------------------------
+//--- 010 Editor v11.0 Binary Template
+//
+//      File: COFFLib.bt
+//   Authors: Pablo Botella / Claude
+//   Version: 1.0
+//   Purpose: Parse COFF archives (.lib): the ar container, the first and
+//            second linker members, the longnames member and every COFF
+//            object member in full (file header, optional header, section
+//            headers, raw data, relocations, symbol table with auxiliary
+//            records, string table). Also recognises VC6+ short import
+//            members. Written to inspect x86 import libraries (old "long"
+//            format used by Alaska ALINK), but works on any COFF .lib.
+//  Category: Archive
+// File Mask: *.lib,*.a
+//  ID Bytes: 21 3C 61 72 63 68 3E 0A //!<arch>\n
+//   History:
+//   1.0   2026-08-19 Initial version.
+//------------------------------------------------
+
+LittleEndian();
+
+//--------------------------------------------------------------- helpers
+
+// Name of an ar member without trailing blanks ("ot4xb.dll/" keeps the '/').
+string ArName(char name[16])
+{
+    local string s = name;   // char[16] -> string (stops at NUL or 16 chars)
+    local int n = Strlen(s);
+    while (n > 0 && s[n-1] == ' ')
+        n--;
+    return SubStr(s, 0, n);
+}
+
+int64 ArSize(char fileSize[10])
+{
+    local int64 size = 0;
+    SScanf(fileSize, "%Ld", size);
+    return size;
+}
+
+string SectionFlagsStr(uint32 f)
+{
+    local string s = "";
+    if (f & 0x00000020) s += "CODE ";
+    if (f & 0x00000040) s += "IDATA ";
+    if (f & 0x00000080) s += "UDATA ";
+    if (f & 0x00000200) s += "INFO ";
+    if (f & 0x00000800) s += "REMOVE ";
+    if (f & 0x00001000) s += "COMDAT ";
+    if (f & 0x02000000) s += "DISCARDABLE ";
+    if (f & 0x20000000) s += "EXEC ";
+    if (f & 0x40000000) s += "READ ";
+    if (f & 0x80000000) s += "WRITE ";
+    local uint32 al = (f >> 20) & 0xF;
+    if (al > 0)
+        s += Str("ALIGN%d ", 1 << (al - 1));
+    return s;
+}
+
+string RelocTypeStr(uint16 t)
+{
+    switch (t)
+    {
+        case 0x00: return "ABSOLUTE";
+        case 0x01: return "DIR16";
+        case 0x02: return "REL16";
+        case 0x06: return "DIR32";
+        case 0x07: return "DIR32NB";
+        case 0x09: return "SEG12";
+        case 0x0A: return "SECTION";
+        case 0x0B: return "SECREL";
+        case 0x0C: return "TOKEN";
+        case 0x0D: return "SECREL7";
+        case 0x14: return "REL32";
+    }
+    return Str("type %04Xh", t);
+}
+
+string StorageClassStr(ubyte c)
+{
+    switch (c)
+    {
+        case 0:   return "NULL";
+        case 2:   return "EXTERNAL";
+        case 3:   return "STATIC";
+        case 6:   return "LABEL";
+        case 103: return "FILE";
+        case 104: return "SECTION";
+        case 105: return "WEAK_EXTERNAL";
+        case 107: return "CLR_TOKEN";
+        case 255: return "END_OF_FUNCTION";
+    }
+    return Str("class %d", c);
+}
+
+string SelectionStr(ubyte s)
+{
+    switch (s)
+    {
+        case 1: return "NODUPLICATES";
+        case 2: return "ANY";
+        case 3: return "SAME_SIZE";
+        case 4: return "EXACT_MATCH";
+        case 5: return "ASSOCIATIVE";
+        case 6: return "LARGEST";
+    }
+    return Str("selection %d", s);
+}
+
+//--------------------------------------------------------------- ar header
+
+typedef struct {
+    SetBackColor(cLtYellow);
+    char fileName[16];
+    char modification_timestamp[12];
+    char ownerID[6];
+    char groupID[6];
+    char fileMode[8];
+    char fileSize[10];
+    char endMarker[2];
+    SetBackColor(cNone);
+} AR_HEADER <read=ReadArHeader>;
+
+string ReadArHeader(AR_HEADER &h)
+{
+    return ArName(h.fileName) + "  size=" + h.fileSize;
+}
+
+//--------------------------------------------------------------- linker members
+
+// First linker member: big-endian symbol count, big-endian member offsets
+// (one per symbol, in member order), then the symbol names.
+typedef struct (int64 size) {
+    local int64 start = FTell();
+    BigEndian();
+    uint32 NumberOfSymbols;
+    if (NumberOfSymbols > 0)
+        uint32 MemberOffsets[NumberOfSymbols] <format=hex>;
+    LittleEndian();
+    local uint32 i;
+    for (i = 0; i < NumberOfSymbols; i++)
+        string SymbolName;
+    FSeek(start + size);
+} LINKER_MEMBER_1 <read=ReadLinkerMember1>;
+
+string ReadLinkerMember1(LINKER_MEMBER_1 &m)
+{
+    return Str("first linker member: %u symbols", m.NumberOfSymbols);
+}
+
+// Second linker member: little-endian member count and member offsets,
+// little-endian symbol count, 1-based member index per symbol (symbols
+// sorted by name), then the sorted symbol names.
+typedef struct (int64 size) {
+    local int64 start = FTell();
+    uint32 NumberOfMembers;
+    if (NumberOfMembers > 0)
+        uint32 MemberOffsets[NumberOfMembers] <format=hex>;
+    uint32 NumberOfSymbols;
+    if (NumberOfSymbols > 0)
+        uint16 MemberIndex[NumberOfSymbols];
+    local uint32 i;
+    for (i = 0; i < NumberOfSymbols; i++)
+        string SymbolName;
+    FSeek(start + size);
+} LINKER_MEMBER_2 <read=ReadLinkerMember2>;
+
+string ReadLinkerMember2(LINKER_MEMBER_2 &m)
+{
+    return Str("second linker member: %u members, %u symbols", m.NumberOfMembers, m.NumberOfSymbols);
+}
+
+//--------------------------------------------------------------- COFF object
+
+typedef struct {
+    uint16 Machine <format=hex>;
+    uint16 NumberOfSections;
+    uint32 TimeDateStamp;
+    uint32 PointerToSymbolTable <format=hex>;
+    uint32 NumberOfSymbols;
+    uint16 SizeOfOptionalHeader;
+    uint16 Characteristics <format=hex>;
+} COFF_FILE_HEADER <read=ReadFileHeader>;
+
+string ReadFileHeader(COFF_FILE_HEADER &h)
+{
+    return Str("machine %04Xh, %u sections, %u symbols, opthdr %u", h.Machine, h.NumberOfSections, h.NumberOfSymbols, h.SizeOfOptionalHeader);
+}
+
+// PE32 optional header as written into the import descriptor member by
+// old MS LINK (size E0h). Only decoded when the size is exactly E0h.
+typedef struct {
+    uint16 Magic <format=hex>;
+    ubyte  MajorLinkerVersion;
+    ubyte  MinorLinkerVersion;
+    uint32 SizeOfCode;
+    uint32 SizeOfInitializedData;
+    uint32 SizeOfUninitializedData;
+    uint32 AddressOfEntryPoint <format=hex>;
+    uint32 BaseOfCode <format=hex>;
+    uint32 BaseOfData <format=hex>;
+    uint32 ImageBase <format=hex>;
+    uint32 SectionAlignment <format=hex>;
+    uint32 FileAlignment <format=hex>;
+    uint16 MajorOperatingSystemVersion;
+    uint16 MinorOperatingSystemVersion;
+    uint16 MajorImageVersion;
+    uint16 MinorImageVersion;
+    uint16 MajorSubsystemVersion;
+    uint16 MinorSubsystemVersion;
+    uint32 Win32VersionValue;
+    uint32 SizeOfImage;
+    uint32 SizeOfHeaders;
+    uint32 CheckSum;
+    uint16 Subsystem;
+    uint16 DllCharacteristics <format=hex>;
+    uint32 SizeOfStackReserve <format=hex>;
+    uint32 SizeOfStackCommit <format=hex>;
+    uint32 SizeOfHeapReserve <format=hex>;
+    uint32 SizeOfHeapCommit <format=hex>;
+    uint32 LoaderFlags;
+    uint32 NumberOfRvaAndSizes;
+    struct { uint32 VirtualAddress <format=hex>; uint32 Size; } DataDirectory[16];
+} PE32_OPTIONAL_HEADER;
+
+typedef struct {
+    char   Name[8];
+    uint32 VirtualSize;
+    uint32 VirtualAddress <format=hex>;
+    uint32 SizeOfRawData;
+    uint32 PointerToRawData <format=hex>;
+    uint32 PointerToRelocations <format=hex>;
+    uint32 PointerToLinenumbers <format=hex>;
+    uint16 NumberOfRelocations;
+    uint16 NumberOfLinenumbers;
+    uint32 Characteristics <format=hex>;
+} COFF_SECTION_HEADER <read=ReadSectionHeader>;
+
+string ReadSectionHeader(COFF_SECTION_HEADER &h)
+{
+    return Str("%-8s raw=%u @%Xh relocs=%u @%Xh  %s", h.Name, h.SizeOfRawData, h.PointerToRawData,
+               h.NumberOfRelocations, h.PointerToRelocations, SectionFlagsStr(h.Characteristics));
+}
+
+typedef struct {
+    uint32 VirtualAddress <format=hex>;
+    uint32 SymbolTableIndex;
+    uint16 Type <format=hex>;
+} COFF_RELOCATION <read=ReadRelocation>;
+
+string ReadRelocation(COFF_RELOCATION &r)
+{
+    return Str("@%Xh %s -> symbol #%u", r.VirtualAddress, RelocTypeStr(r.Type), r.SymbolTableIndex);
+}
+
+// Raw data and relocations of one section (positions are relative to the
+// start of the object member).
+typedef struct (int64 objBase, uint32 rawPtr, uint32 rawSize, uint32 relPtr, uint16 nRel, string name) {
+    local string sName = name;
+    if (rawSize > 0)
+    {
+        FSeek(objBase + rawPtr);
+        ubyte RawData[rawSize];
+    }
+    if (nRel > 0)
+    {
+        FSeek(objBase + relPtr);
+        COFF_RELOCATION Relocations[nRel];
+    }
+} SECTION_BODY <read=ReadSectionBody>;
+
+string ReadSectionBody(SECTION_BODY &s)
+{
+    return s.sName;
+}
+
+// Auxiliary record of a section definition (COMDAT info).
+typedef struct {
+    uint32 Length;
+    uint16 NumberOfRelocations;
+    uint16 NumberOfLinenumbers;
+    uint32 CheckSum <format=hex>;
+    uint16 Number;
+    ubyte  Selection;
+    ubyte  Unused[3];
+} AUX_SECTION <read=ReadAuxSection>;
+
+string ReadAuxSection(AUX_SECTION &a)
+{
+    return Str("len=%u relocs=%u %s", a.Length, a.NumberOfRelocations, SelectionStr(a.Selection)) +
+           (a.Selection == 5 ? Str(" (section %u)", a.Number) : "");
+}
+
+typedef struct (int64 strTabPos) {
+    union {
+        char ShortName[8];
+        struct { uint32 Zeroes; uint32 Offset; } Long;
+    } Name;
+    uint32 Value <format=hex>;
+    int16  SectionNumber;
+    uint16 Type <format=hex>;
+    ubyte  StorageClass;
+    ubyte  NumberOfAuxSymbols;
+    local string sName;
+    if (Name.Long.Zeroes == 0)
+        sName = ReadString(strTabPos + Name.Long.Offset);
+    else
+        sName = Name.ShortName;
+    if (NumberOfAuxSymbols > 0)
+    {
+        // section definition symbols (class STATIC, value 0, in a section) carry a COMDAT aux record
+        if (StorageClass == 3 && SectionNumber > 0 && NumberOfAuxSymbols == 1)
+            AUX_SECTION Aux;
+        else
+            ubyte AuxRaw[18 * NumberOfAuxSymbols];
+    }
+} COFF_SYMBOL <read=ReadSymbol>;
+
+string ReadSymbol(COFF_SYMBOL &s)
+{
+    local string sec;
+    if (s.SectionNumber > 0) sec = Str("sect %d", s.SectionNumber);
+    else if (s.SectionNumber == 0) sec = "UNDEF";
+    else if (s.SectionNumber == -1) sec = "ABS";
+    else sec = "DEBUG";
+    return Str("%-32s %-6s value=%Xh type=%Xh %s", s.sName, sec, s.Value, s.Type, StorageClassStr(s.StorageClass));
+}
+
+typedef struct (int64 size) {
+    local int64 base = FTell();
+    COFF_FILE_HEADER FileHeader;
+    if (FileHeader.SizeOfOptionalHeader == 0xE0)
+        PE32_OPTIONAL_HEADER OptionalHeader;
+    else if (FileHeader.SizeOfOptionalHeader > 0)
+        ubyte OptionalHeader[FileHeader.SizeOfOptionalHeader];
+    if (FileHeader.NumberOfSections > 0)
+        COFF_SECTION_HEADER SectionHeader[FileHeader.NumberOfSections];
+    local int i;
+    for (i = 0; i < FileHeader.NumberOfSections; i++)
+    {
+        SECTION_BODY Section(base, SectionHeader[i].PointerToRawData, SectionHeader[i].SizeOfRawData,
+                             SectionHeader[i].PointerToRelocations, SectionHeader[i].NumberOfRelocations,
+                             SectionHeader[i].Name);
+    }
+    local int64 symPos = base + FileHeader.PointerToSymbolTable;
+    local int64 strPos = symPos + (int64)FileHeader.NumberOfSymbols * 18;
+    if (FileHeader.NumberOfSymbols > 0)
+    {
+        FSeek(symPos);
+        local uint32 n = 0;
+        local int k = 0;
+        while (n < FileHeader.NumberOfSymbols)
+        {
+            COFF_SYMBOL Symbol(strPos);
+            n += 1 + Symbol[k].NumberOfAuxSymbols;
+            k++;
+        }
+        FSeek(strPos);
+        uint32 StringTableSize;
+        if (StringTableSize > 4)
+            char StringTable[StringTableSize - 4];
+    }
+    FSeek(base + size);
+} COFF_OBJECT <read=ReadObject>;
+
+string ReadObject(COFF_OBJECT &o)
+{
+    local string s = Str("COFF object: %u sections", o.FileHeader.NumberOfSections);
+    if (o.FileHeader.NumberOfSymbols > 0 && o.Symbol[0].StorageClass == 2)
+        s += "  " + o.Symbol[0].sName;
+    return s;
+}
+
+//--------------------------------------------------------------- short import (VC6+)
+
+typedef struct (int64 size) {
+    local int64 start = FTell();
+    uint16 Sig1;
+    uint16 Sig2 <format=hex>;
+    uint16 Version;
+    uint16 Machine <format=hex>;
+    uint32 TimeDateStamp;
+    uint32 SizeOfData;
+    uint16 OrdinalOrHint;
+    uint16 TypeInfo <format=hex>;   // Type:2 NameType:3 Reserved:11
+    string ImportName;
+    string DllName;
+    FSeek(start + size);
+} SHORT_IMPORT <read=ReadShortImport>;
+
+string ReadShortImport(SHORT_IMPORT &s)
+{
+    return "short import: " + s.ImportName + " from " + s.DllName;
+}
+
+//--------------------------------------------------------------- archive member
+
+local int gLinkerMembers = 0;
+
+typedef struct {
+    AR_HEADER Header;
+    local int64 size = ArSize(Header.fileSize);
+    local int64 dataStart = FTell();
+    local string name = ArName(Header.fileName);
+    local string kind;
+    if (name == "/" && gLinkerMembers == 0)
+    {
+        kind = "linker member 1";
+        gLinkerMembers = 1;
+        LINKER_MEMBER_1 First(size);
+    }
+    else if (name == "/" && gLinkerMembers == 1)
+    {
+        kind = "linker member 2";
+        gLinkerMembers = 2;
+        LINKER_MEMBER_2 Second(size);
+    }
+    else if (name == "//")
+    {
+        kind = "longnames";
+        if (size > 0)
+            char LongNames[size];
+    }
+    else if (size >= 20 && ReadUShort(dataStart) == 0 && ReadUShort(dataStart + 2) == 0xFFFF)
+    {
+        kind = "short import";
+        SHORT_IMPORT Import(size);
+    }
+    else if (size >= 20 && (ReadUShort(dataStart) == 0x14C || ReadUShort(dataStart) == 0x8664 || ReadUShort(dataStart) == 0x1C0 || ReadUShort(dataStart) == 0xAA64))
+    {
+        kind = "COFF object";
+        COFF_OBJECT Object(size);
+    }
+    else
+    {
+        kind = "data";
+        if (size > 0)
+            ubyte Data[size];
+    }
+    FSeek(dataStart + size);
+    if (size & 1)
+        ubyte Padding <bgcolor=cLtGray>;
+} AR_MEMBER <read=ReadArMember>;
+
+string ReadArMember(AR_MEMBER &m)
+{
+    return m.name + "  [" + m.kind + "]  size=" + Str("%Ld", m.size);
+}
+
+//--------------------------------------------------------------- main
+
+char signature[8] <bgcolor=cLtPurple>;
+if (signature != "!<arch>\n")
+{
+    Warning("File is not a valid archive. Template stopped.");
+    return -1;
+}
+
+while (!FEof())
+{
+    AR_MEMBER Member;
+}

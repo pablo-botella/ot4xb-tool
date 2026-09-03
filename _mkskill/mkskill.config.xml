@@ -1,0 +1,10 @@
+<mkskill>
+  <project id="main" name="ot4xb-tool"
+           description="The ot4xb tool set in one binary: build steps, version scripts, xbmac code generation, ALINK import libraries, callback objects, and the in-source documentation pipeline (scan, split, cross-check, compile to SQLite, resolve)"
+           project-type="Go-CLI">
+    <meta>
+      <module>github.com/pablo-botella/ot4xb-tool</module>
+      <license>MIT</license>
+    </meta>
+  </project>
+</mkskill>
