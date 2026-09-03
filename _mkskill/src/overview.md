@@ -33,12 +33,12 @@ go install github.com/pablo-botella/ot4xb-tool/cmd/ot4xb-tool@latest    # the bi
 | `xbmac2h` | from a `.xbmac` registration list, the export/function-list headers and the two `.def` files |
 | `def2lib20` | an x86 COFF import library (`.lib`, long format, ALINK compatible) from a `.def` |
 | `cbk2obj` | an Xbase++ callback script (`.cbk`) compiled into a linkable x86 COFF object (`.obj`) |
-| `scandoc` | scan C/C++ sources for `/*{{ }}*/` documentation markers: print the model and diagnostics |
+| `scandoc` | scan sources for `/*{{ }}*/` documentation markers (Draft 4): list the topics and the issues |
 | `srcsplit` | split an authoring source into its code projection (no doc blocks) and its doc projection |
 | `doccheck` | cross-check the documented surface against the `.xbmac` registration list |
 | `compile` | compile documented sources into the intermediate SQLite database (any number of passes) |
-| `resolve` | the a-posteriori step over that database: broken references, include cycles, duplicates |
-| `gendoc` | the reference Markdown from that database: one file per topic (slugs) plus an index |
+| `resolve` | the a-posteriori step over that database: broken references, include cycles, slug clashes |
+| `gendoc` | the reference Markdown from that database: one file per topic or topic group (slugs) plus an index |
 
 The build-side commands (`-bs`, `vbuild`, `xbmac2h`, `def2lib20`, `cbk2obj`)
 replace the legacy Harbour/xppcbk tools of the ot4xb build, byte-compatible

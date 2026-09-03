@@ -420,7 +420,7 @@ func Scan(name string, data []byte) *File {
 	for _, mk := range markers {
 		parseMarker(f, mk)
 	}
-	var scope *Topic   // open composed topic (nil = top level)
+	var scope *Topic // open composed topic (nil = top level)
 	var scopeKind string
 	var scopeLine int
 	for _, mk := range markers {

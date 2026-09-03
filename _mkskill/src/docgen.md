@@ -4,51 +4,55 @@ mkskill:
   pos: 110
 ---
 
-## `gendoc` — the reference, one file per topic
+## `gendoc` — the reference, one file per page
 
 The first product generated from the documentation database: a flat folder
-of Markdown files, **one per topic**, plus an `index.md`. No grouping yet — a
-folder with all the content, that is the point.
+of Markdown files, **one per page**, plus an `index.md`. A page is a topic,
+or a topic group — every topic that declared the same `_tg_`, the way the
+overloads of a C++ function share one page. No other grouping: a folder with
+all the content, that is the point.
 
 ```
 ot4xb-tool [-q] gendoc -db <file.db> -out <dir>
 ```
 
-Run it on a compiled and resolved database. Files whose bytes are already
-right are not rewritten; the output is CRLF, UTF-8.
+Run it on a compiled and resolved database. The output is CRLF.
 
 ### File names: slugs
 
-Every topic gets a file name stem from its kind and normalized key —
-`function-array2ppmarshall`, `method-large_integer.new64`,
-`note-con-get-long-ex`, `cpp-function-json_ns.serialize-xppparamlist` — using
-only `a-z 0-9 _ - .`: lower-cased, `:` and `::` become `.`, anything else
-becomes `-`, runs collapse. Case is dropped on purpose (a Windows file system
-would merge `Foo.md` and `FOO.md` anyway); the topics that then collide all
-get a short hash of their exact `kind|key` appended, so the result never
-depends on order.
-
-A topic may name its own file with an **explicit slug** — `| slug: fpqcall`
-on its marker (entities, members and notes alike). It wins over the computed
-one; it is the way to give a page a stable, known name, and the only way to
-have internal links to it clear. Explicit slugs are compared
-**case-insensitively**: an invalid one (outside the alphabet) is reported and
-the computed name used; the same explicit slug on several topics is an
-authoring error — reported with `file:line`, and all of them are suffixed so
-none overwrites another.
+A page's file is its slug plus `.md`. A topic names its own with `_slug_:`
+in its header (`wapist_point`, `filetime64`); without one the tool computes
+`kind-key` — `function-ft64_setts`, `cpp-function-json_ns.serialize` — from
+the alphabet `a-z 0-9 _ - .` (lower-cased, `:` becomes `.`, anything else
+`-`). A group's file is the group's slug (the name, unless a block wrote a
+`_slug_`, which every block of the group must repeat). Two pages sharing a
+slug are reported by `resolve`; the generator still writes both, suffixing
+the later one (`-2`), so nothing overwrites anything.
 
 ### What a page holds
 
-- The title (the identity as written), the kind, its categories.
-- Per segment (a topic documented in several places has several, in
-  document order): its source `file:line`, then the content, re-parsed from
-  the stored marker text by the same scanner: syntax, description,
-  parameters, return, flags, examples, notes, and every other field as
-  `name: value` — unknown fields included, nothing is dropped.
-- For a class or structure: a **Members** list linking to each member's own
-  page (members are topics too). For a topic: its commands.
-- **References**: included notes, parents, links, see-also and calls — as
-  links when the target exists, as plain text otherwise. Included notes are
-  linked, not expanded: content resolution is a later step.
+Exactly what was written, in the order it was written. A page is the
+concatenation of the topic's segments (every marker, from every file, in
+document order); within a segment, every field in turn:
 
-`index.md` lists every topic under its kind, linking to its page.
+- a labelled field renders as `**label:** value`; a label-hidden one
+  (`desc_`) as its bare value; an entry-hidden one (`_slug_`) not at all; a
+  `|:` field as its text. Multi-line values are dedented, a value that starts
+  on its own line (`| params:` and a list below) keeps the label on its own
+  line;
+- the identity is the title (`# ident`; `## ident` for each topic of a
+  group page under `# group`);
+- `include-note-id` is replaced by the note's rendered body, right there —
+  recursively, cycles cut;
+- `{{ilink: <target> text}}` becomes `[text](page.md)` when the target
+  exists, plain text otherwise; any other `{{label: value}}` inline renders
+  as its bold label;
+- within one marker, the entries that follow a list item continue that item
+  on the same line (a hidden-label one after ` - `), so
+  `|member_: - MEMBER LONG x | desc_: x coordinate.` reads
+  `- MEMBER LONG x - x coordinate.` and consecutive members stay one list.
+
+The tool adds no section, no table and no template of its own: the
+`**BEGIN STRUCTURE**` lines, the `- MEMBER` items, the `See also:` text are
+the author's. `index.md` lists every page under its kind (and the groups),
+linking to it.

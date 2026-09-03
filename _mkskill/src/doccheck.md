@@ -18,9 +18,9 @@ prints a summary plus one line per gap:
 
 | finding | meaning |
 |---|---|
-| `UNDOCUMENTED function NAME (SRC: file.cpp)` | registered with `_XPP_REG_FUN_` / `_XPP_REG_WMAC` and no `function:`, `internal-function:`, `class` or `structure` documents it — an Xbase++ class name is itself a registered function (its constructor), so a class doc counts |
-| `UNDOCUMENTED structure NAME` | a `_XPP_REG_WST_` with no `structure:` / `class-name:` |
-| `UNDOCUMENTED c-function name` | a `_CDECL_EXPORT_` with no `c-function:` (case-sensitive) |
+| `UNDOCUMENTED function NAME (SRC: file.cpp)` | registered with `_XPP_REG_FUN_` / `_XPP_REG_WMAC` and no `function`, `internal-function` or `class` topic documents it — an Xbase++ class name is itself a registered function (its constructor), so a class doc counts |
+| `UNDOCUMENTED structure NAME` | a `_XPP_REG_WST_` with no `class` topic (a GWST structure is a class) |
+| `UNDOCUMENTED c-function name` | a `_CDECL_EXPORT_` with no `c-function` / `debug-c-function` topic (case-sensitive) |
 | `UNREGISTERED function name (file:line)` | with `-full`: documented as a function but not in the list — stale doc, a wrong kind, or a name the list spells otherwise |
 
 Only functions are checked in reverse: structures and C functions reach the

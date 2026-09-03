@@ -1,618 +1,437 @@
+// Package docgen renders a compiled (and resolved) documentation database
+// into loose reference Markdown: one .md per page, a page being a topic or a
+// topic group (every topic that declared the same _tg_), plus an index.md.
+//
+// Rendering follows Draft 4 literally: a page is the concatenation of its
+// segments in pos order; every field renders in written order as
+// "**label:** value", a label-hidden field as its bare value, an entry-hidden
+// field not at all, a "|:" field as its text; the identity is the title;
+// include-note-id transcludes the note's rendered body in place (recursive,
+// cycles cut); {{ilink: <target> text}} becomes a Markdown link to the target
+// page. Multi-line values are dedented; consecutive list-item entries stay one
+// list. The tool adds nothing else: the author writes the presentation.
 package docgen
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
-	"github.com/pablo-botella/ot4xb-tool/modules/doccompile"
 	"github.com/pablo-botella/ot4xb-tool/modules/docdb"
-	"github.com/pablo-botella/ot4xb-tool/modules/scandoc"
+	"github.com/pablo-botella/ot4xb-tool/modules/srcdoc"
 )
 
-// Topic is a documented thing as stored in the database.
-type Topic struct {
-	ID               int64
-	Kind, Key, Ident string
+type field struct {
+	label     string
+	value     string
+	hideEntry bool
+	hideLabel bool
 }
 
-// segment is one contribution of a source to a topic, with its provenance.
 type segment struct {
-	id, topic int64
-	src       string
-	line, pos int64
-	raw       []byte
+	idseg  int64
+	pos    int64
+	line   int64
+	src    string
+	fields []field
+	header bool // the first field is a topic identity
 }
 
-// ref is a stored reference, with its target resolved when it exists.
-type ref struct {
-	from            int64
-	toKind, toIdent string
-	refType         string
-	to              int64 // 0 when unresolved
+type topic struct {
+	id       int64
+	kind     string
+	key      string
+	ident    string
+	slug     string
+	idtg     int64
+	segments []segment
 }
 
-// itemKinds are the class/structure auxiliaries: a segment holding one alone
-// re-parses only inside a class scope, so its raw text is wrapped in one.
-var itemKinds = map[string]bool{
-	"method": true, "ivar": true, "property": true,
-	"class-method": true, "class-var": true, "class-property": true,
-	"gwst-member": true,
-}
-
-// reopenable / class family, as in resolve.
-func family(kind string) []string {
-	if kind == "class" || kind == "structure" {
-		return []string{"class", "structure"}
-	}
-	return []string{kind}
+type page struct {
+	slug   string
+	file   string
+	title  string
+	kind   string // topic kind, or "group"
+	topics []*topic
 }
 
 type model struct {
-	topics   []Topic
-	byID     map[int64]Topic
-	byKey    map[string]int64 // kind|key
-	byName   map[string][]int64
-	segs     map[int64][]segment
-	refs     map[int64][]ref
-	cats     map[int64][]string
-	members  map[int64][]int64 // owner topic -> component topics
-	inTopic  map[int64][]int64 // topic -> commands living in it
-	slugs    map[int64]string
-	segCount int
-	parsed   map[int64]*scandoc.File // segment id -> its re-parsed raw text
-	warnings []string
+	topics  map[int64]*topic
+	byKey   map[string]*topic // kind + "\x00" + key
+	pages   []*page
+	pageOf  map[int64]*page  // topic id -> page
+	bySlug  map[string]*page // lower slug -> page
+	byGroup map[string]*page // group key -> page
+	log     func(string)
 }
 
-// explicitSlug returns the `| slug:` field of a re-parsed segment, if any:
-// on the entity, on its (single) component, or on the note.
-func explicitSlug(f *scandoc.File) string {
-	for _, e := range f.Entities {
-		if v, ok := e.Field("slug"); ok && strings.TrimSpace(v) != "" {
-			return strings.TrimSpace(v)
-		}
-		for _, c := range e.Components {
-			if v, ok := c.Field("slug"); ok && strings.TrimSpace(v) != "" {
-				return strings.TrimSpace(v)
-			}
-		}
-	}
-	for _, n := range f.Notes {
-		if n.Slug != "" {
-			return n.Slug
-		}
-	}
-	return ""
-}
+var ilinkRe = regexp.MustCompile(`\{\{\s*ilink\s*:\s*<\s*([A-Za-z_-]+)\s+([^>]+?)\s*>\s*([^}]*)\}\}`)
+var inlineRe = regexp.MustCompile(`\{\{\s*([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*([^}]*)\}\}`)
 
-func load(db *docdb.DB) (*model, error) {
-	m := &model{byID: map[int64]Topic{}, byKey: map[string]int64{}, byName: map[string][]int64{},
-		segs: map[int64][]segment{}, refs: map[int64][]ref{}, cats: map[int64][]string{},
-		members: map[int64][]int64{}, inTopic: map[int64][]int64{}}
-	rows, err := db.QueryAll(`SELECT idtopic, kind, key, ident FROM topics ORDER BY kind, key`)
-	if err != nil {
-		return nil, err
-	}
-	for _, r := range rows {
-		t := Topic{r[0].(int64), r[1].(string), r[2].(string), r[3].(string)}
-		m.topics = append(m.topics, t)
-		m.byID[t.ID] = t
-		m.byKey[t.Kind+"|"+t.Key] = t.ID
-		m.byName[strings.ToUpper(t.Key)] = append(m.byName[strings.ToUpper(t.Key)], t.ID)
-	}
-	rows, err = db.QueryAll(`SELECT s.idseg, s.idtopic, o.src, s.line, s.pos, s.raw FROM segments s JOIN sources o USING(idsrc) ORDER BY s.idtopic, s.pos`)
-	if err != nil {
-		return nil, err
-	}
-	for _, r := range rows {
-		s := segment{r[0].(int64), r[1].(int64), r[2].(string), r[3].(int64), r[4].(int64), r[5].([]byte)}
-		m.segs[s.topic] = append(m.segs[s.topic], s)
-		m.segCount++
-	}
-	rows, err = db.QueryAll(`SELECT idtopic_in, reftokind, reftoident, reftype FROM refs ORDER BY rowid`)
-	if err != nil {
-		return nil, err
-	}
-	for _, r := range rows {
-		x := ref{r[0].(int64), r[1].(string), r[2].(string), r[3].(string), 0}
-		x.to = m.resolve(x.toKind, x.toIdent)
-		m.refs[x.from] = append(m.refs[x.from], x)
-		if x.refType == "in-topic" && x.to != 0 {
-			m.inTopic[x.to] = append(m.inTopic[x.to], x.from)
-		}
-	}
-	rows, err = db.QueryAll(`SELECT idtopic, category FROM topic_category ORDER BY category`)
-	if err != nil {
-		return nil, err
-	}
-	for _, r := range rows {
-		m.cats[r[0].(int64)] = append(m.cats[r[0].(int64)], r[1].(string))
-	}
-	// components belong to the topic whose key is the part before ':'
-	for _, t := range m.topics {
-		if !itemKinds[t.Kind] {
-			continue
-		}
-		owner, _, ok := strings.Cut(t.Key, ":")
-		if !ok {
-			continue
-		}
-		for _, k := range []string{"class", "structure", "cpp-class"} {
-			if id, ok := m.byKey[k+"|"+owner]; ok {
-				m.members[id] = append(m.members[id], t.ID)
-				break
-			}
-		}
-	}
-	// re-parse every segment once (cached for rendering) and collect the
-	// explicit slugs: the first `| slug:` found among a topic's segments wins
-	m.parsed = map[int64]*scandoc.File{}
-	explicit := map[int64]string{}
-	for _, t := range m.topics {
-		for _, s := range m.segs[t.ID] {
-			f := reparse(s.raw)
-			m.parsed[s.id] = f
-			if _, done := explicit[t.ID]; !done {
-				if e := explicitSlug(f); e != "" {
-					explicit[t.ID] = e
-				}
-			}
-		}
-	}
-	var sw []SlugWarning
-	m.slugs, sw = Slugs(m.topics, explicit)
-	for _, w := range sw {
-		where := ""
-		if segs := m.segs[w.ID]; len(segs) > 0 {
-			where = fmt.Sprintf(" (%s:%d)", segs[0].src, segs[0].line)
-		}
-		m.warnings = append(m.warnings, w.Msg+where)
-	}
-	return m, nil
-}
-
-// resolve finds a reference target: qualified targets by their family and
-// key rule; unqualified names (see-also, calls) by name among the Xbase++
-// callables and classes, first match wins.
-func (m *model) resolve(kind, ident string) int64 {
-	if kind != "" {
-		for _, k := range family(kind) {
-			if id, ok := m.byKey[k+"|"+doccompile.Key(k, ident)]; ok {
-				return id
-			}
-		}
-		return 0
-	}
-	name := strings.ToUpper(strings.TrimSpace(ident))
-	for _, k := range []string{"function", "internal-function", "class", "structure", "command"} {
-		if id, ok := m.byKey[k+"|"+name]; ok {
-			return id
-		}
-	}
-	return 0
-}
-
-// link renders a Markdown link to a topic, or plain text when it has no file.
-func (m *model) link(id int64, text string) string {
-	if id == 0 {
-		return text
-	}
-	if text == "" {
-		text = m.byID[id].Ident
-	}
-	return fmt.Sprintf("[%s](%s.md)", text, m.slugs[id])
-}
-
-// reparse re-scans a segment's raw marker text with the one scanner. A lone
-// class auxiliary is wrapped in a synthetic class scope so it attaches as a
-// component; the wrapper never reaches the output.
-func reparse(raw []byte) *scandoc.File {
-	text := strings.TrimSpace(string(raw))
-	first := text
-	if i := strings.Index(first, "/*{{"); i >= 0 {
-		first = first[i+4:]
-	}
-	key := first
-	for i := 0; i < len(key); i++ {
-		if key[i] == ':' || key[i] == ' ' || key[i] == '\t' || key[i] == '}' {
-			key = key[:i]
-			break
-		}
-	}
-	if itemKinds[strings.ToLower(strings.TrimSpace(key))] {
-		text = "/*{{begin-class}}*/\r\n/*{{class-name: _}}*/\r\n" + text + "\r\n/*{{end-class}}*/"
-	}
-	return scandoc.ScanText("segment", []byte(text))
-}
-
-// firstPos is the document position of a topic's first segment (members are
-// listed in the order they were declared).
-func (m *model) firstPos(id int64) int64 {
-	if segs := m.segs[id]; len(segs) > 0 {
-		return segs[0].pos
-	}
-	return 0
-}
-
-// memberType extracts the declared type of a gwst-member from its authored
-// text: a `type:` field when the marker carries one, else the token after
-// "type:" in the identity line ("u type: _LARGE_INTEGER_ pos: 0 size: 8").
-func memberType(c scandoc.Component) string {
-	if v, ok := c.Field("type"); ok && strings.TrimSpace(v) != "" {
-		return strings.Trim(strings.Fields(v)[0], "`")
-	}
-	if i := strings.Index(c.Ident, "type:"); i >= 0 {
-		if f := strings.Fields(c.Ident[i+len("type:"):]); len(f) > 0 {
-			return strings.Trim(f[0], "`")
-		}
-	}
-	return ""
-}
-
-// childOf finds the documented class/structure a member type names: the
-// type itself, or its WAPIST_ form (the wapist structures carry that prefix
-// as their real name). 0 when the type is a plain scalar.
-func (m *model) childOf(typ string) int64 {
-	if typ == "" {
-		return 0
-	}
-	for _, name := range []string{typ, "WAPIST_" + typ} {
-		if id := m.resolve("class", name); id != 0 {
-			return id
-		}
-	}
-	return 0
-}
-
-// memberLine renders one line of a Structure Definition: MEMBER TYPE name for
-// a scalar, MEMBER @ [CLASS](page) name for an embedded structure.
-func (m *model) memberLine(id int64) string {
-	t := m.byID[id]
-	name := t.Ident
-	if _, after, ok := strings.Cut(t.Ident, ":"); ok {
-		name = after
-	}
-	typ := ""
-	if segs := m.segs[id]; len(segs) > 0 {
-		if f := m.parsed[segs[0].id]; f != nil {
-			for _, e := range f.Entities {
-				for _, c := range e.Components {
-					typ = memberType(c)
-				}
-			}
-		}
-	}
-	if child := m.childOf(typ); child != 0 {
-		return fmt.Sprintf("MEMBER @ %s %s", m.link(child, m.byID[child].Ident), name)
-	}
-	if typ == "" {
-		return "MEMBER " + name
-	}
-	return fmt.Sprintf("MEMBER %s %s", typ, name)
-}
-
-// renderNoteBody transcludes a shared note: its body, then the notes it
-// includes in turn. path guards against cycles; repetitions are allowed.
-func (m *model) renderNoteBody(w *md, id int64, path map[int64]bool) {
-	if id == 0 || path[id] {
-		return
-	}
-	path[id] = true
-	defer delete(path, id)
-	for _, s := range m.segs[id] {
-		f := m.parsed[s.id]
-		if f == nil {
-			continue
-		}
-		for _, n := range f.Notes {
-			if n.Body != "" {
-				w.line("%s", strings.ReplaceAll(n.Body, "\n", "\r\n"))
-				w.blank()
-			}
-			for _, dep := range n.Includes {
-				m.renderNoteBody(w, m.resolve("note", dep), path)
-			}
-		}
-	}
-}
-
-// Generate writes one Markdown file per topic plus index.md into outDir.
-// Files whose bytes are already right are not rewritten. Returns the number
-// of topic files.
+// Generate renders the database at dbPath into outDir (created if needed).
+// It returns the number of pages written.
 func Generate(dbPath, outDir string, log func(string)) (int, error) {
 	db, err := docdb.Open(dbPath)
 	if err != nil {
 		return 0, err
 	}
+	defer db.Close()
 	m, err := load(db)
-	db.Close()
 	if err != nil {
 		return 0, err
 	}
-	if log != nil {
-		for _, w := range m.warnings {
-			log("gendoc: warning: " + w)
-		}
-	}
-	if err := os.MkdirAll(outDir, 0777); err != nil {
+	m.log = log
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return 0, err
 	}
-	written := 0
+	for _, p := range m.pages {
+		body := m.renderPage(p)
+		if err := os.WriteFile(filepath.Join(outDir, p.file), []byte(crlf(body)), 0o644); err != nil {
+			return 0, err
+		}
+	}
+	if err := os.WriteFile(filepath.Join(outDir, "index.md"), []byte(crlf(m.renderIndex())), 0o644); err != nil {
+		return 0, err
+	}
+	return len(m.pages), nil
+}
+
+func crlf(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.ReplaceAll(s, "\n", "\r\n")
+}
+
+// ---------------------------------------------------------------- loading
+
+func load(db *docdb.DB) (*model, error) {
+	m := &model{topics: map[int64]*topic{}, byKey: map[string]*topic{}, pageOf: map[int64]*page{},
+		bySlug: map[string]*page{}, byGroup: map[string]*page{}}
+	rows, err := db.QueryAll(`SELECT idtopic, kind, key, ident, slug, idtg FROM topics`)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		t := &topic{id: r[0].(int64), kind: r[1].(string), key: r[2].(string), ident: r[3].(string), slug: r[4].(string), idtg: r[5].(int64)}
+		m.topics[t.id] = t
+		m.byKey[t.kind+"\x00"+t.key] = t
+	}
+	srcs := map[int64]string{}
+	rows, err = db.QueryAll(`SELECT idsrc, src FROM sources`)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		srcs[r[0].(int64)] = r[1].(string)
+	}
+	rows, err = db.QueryAll(`SELECT idseg, idtopic, idsrc, pos, line FROM segments ORDER BY pos`)
+	if err != nil {
+		return nil, err
+	}
+	segOwner := map[int64]*topic{}
+	segAt := map[int64]int{}
+	for _, r := range rows {
+		t := m.topics[r[1].(int64)]
+		if t == nil {
+			continue
+		}
+		t.segments = append(t.segments, segment{idseg: r[0].(int64), src: srcs[r[2].(int64)], pos: r[3].(int64), line: r[4].(int64)})
+		segOwner[r[0].(int64)] = t
+		segAt[r[0].(int64)] = len(t.segments) - 1
+	}
+	rows, err = db.QueryAll(`SELECT idseg, seq, label, value, hide_entry, hide_label FROM fields ORDER BY idseg, seq`)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		t := segOwner[r[0].(int64)]
+		if t == nil {
+			continue
+		}
+		s := &t.segments[segAt[r[0].(int64)]]
+		f := field{label: r[2].(string), value: r[3].(string), hideEntry: r[4].(int64) != 0, hideLabel: r[5].(int64) != 0}
+		if r[1].(int64) == 0 && srcdoc.HeaderKind(f.label) != "" {
+			s.header = true
+		}
+		s.fields = append(s.fields, f)
+	}
+	// pages: groups first (they carry several topics), then loose topics
+	type group struct {
+		id   int64
+		name string
+		key  string
+		slug string
+		pos  int64
+	}
+	var groups []group
+	rows, err = db.QueryAll(`SELECT idtg, name, key, slug, pos FROM topic_groups ORDER BY pos`)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		groups = append(groups, group{r[0].(int64), r[1].(string), r[2].(string), r[3].(string), r[4].(int64)})
+	}
+	topicPos := func(t *topic) int64 {
+		if len(t.segments) == 0 {
+			return 0
+		}
+		return t.segments[0].pos
+	}
+	var pages []*page
+	for _, g := range groups {
+		p := &page{slug: g.slug, title: g.name, kind: "group"}
+		for _, t := range m.topics {
+			if t.idtg == g.id {
+				p.topics = append(p.topics, t)
+			}
+		}
+		sort.Slice(p.topics, func(i, j int) bool { return topicPos(p.topics[i]) < topicPos(p.topics[j]) })
+		if len(p.topics) == 0 {
+			continue
+		}
+		m.byGroup[g.key] = p
+		pages = append(pages, p)
+	}
+	var loose []*topic
 	for _, t := range m.topics {
-		body := m.renderTopic(t)
-		w, err := writeIfChanged(filepath.Join(outDir, m.slugs[t.ID]+".md"), body)
-		if err != nil {
-			return written, err
-		}
-		if w {
-			written++
+		if t.idtg == 0 {
+			loose = append(loose, t)
 		}
 	}
-	if _, err := writeIfChanged(filepath.Join(outDir, "index.md"), m.renderIndex()); err != nil {
-		return written, err
+	sort.Slice(loose, func(i, j int) bool { return topicPos(loose[i]) < topicPos(loose[j]) })
+	for _, t := range loose {
+		pages = append(pages, &page{slug: t.slug, title: t.ident, kind: t.kind, topics: []*topic{t}})
 	}
-	if log != nil {
-		log(fmt.Sprintf("gendoc: %d topic(s), %d segment(s) -> %s (%d file(s) written, the rest unchanged)",
-			len(m.topics), m.segCount, outDir, written))
-	}
-	return len(m.topics), nil
-}
-
-func writeIfChanged(path string, content []byte) (bool, error) {
-	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, content) {
-		return false, nil
-	}
-	return true, os.WriteFile(path, content, 0666)
-}
-
-// ---- rendering ---------------------------------------------------------
-
-type md struct{ strings.Builder }
-
-func (w *md) line(format string, a ...any) {
-	fmt.Fprintf(&w.Builder, format, a...)
-	w.WriteString("\r\n")
-}
-
-func (w *md) blank() { w.WriteString("\r\n") }
-
-func (m *model) renderTopic(t Topic) []byte {
-	var w md
-	w.line("# %s", t.Ident)
-	meta := "*" + t.Kind + "*"
-	if cats := m.cats[t.ID]; len(cats) > 0 {
-		meta += " · " + strings.Join(cats, ", ")
-	}
-	w.line("%s", meta)
-	w.blank()
-	for i, s := range m.segs[t.ID] {
-		if len(m.segs[t.ID]) > 1 {
-			w.line("---")
-			w.line("*Segment %d of %d*", i+1, len(m.segs[t.ID]))
+	// files: unique names, case-insensitively; a duplicate slug gets a suffix
+	used := map[string]int{}
+	for _, p := range pages {
+		base := strings.ToLower(p.slug)
+		if base == "" {
+			base = "page"
 		}
-		w.line("*Source:* `%s:%d`", s.src, s.line)
-		w.blank()
-		m.renderSegment(&w, t, s)
-		// the notes this segment includes are transcluded right here - that is
-		// what include-note-id is for (repetitions allowed, cycles cut)
-		if f := m.parsed[s.id]; f != nil {
-			for _, e := range f.Entities {
-				for _, id := range e.NoteRefs {
-					m.renderNoteBody(&w, m.resolve("note", id), map[int64]bool{})
-				}
+		n := used[base]
+		used[base] = n + 1
+		p.file = base + ".md"
+		if n > 0 {
+			p.file = fmt.Sprintf("%s-%d.md", base, n+1)
+		}
+		if _, dup := m.bySlug[base]; !dup {
+			m.bySlug[base] = p
+		}
+		for _, t := range p.topics {
+			m.pageOf[t.id] = p
+		}
+	}
+	m.pages = pages
+	return m, nil
+}
+
+// ---------------------------------------------------------------- rendering
+
+func (m *model) renderPage(p *page) string {
+	var b strings.Builder
+	if p.kind == "group" {
+		fmt.Fprintf(&b, "# %s\n\n", p.title)
+		for _, t := range p.topics {
+			b.WriteString(m.renderTopic(t, "## ", nil))
+			b.WriteString("\n")
+		}
+		return b.String()
+	}
+	b.WriteString(m.renderTopic(p.topics[0], "# ", nil))
+	return b.String()
+}
+
+// renderTopic renders a topic with its title at the given heading level; with
+// an empty level (transclusion) the title is omitted. stack holds the topics
+// being transcluded, to cut cycles.
+func (m *model) renderTopic(t *topic, level string, stack []int64) string {
+	var b strings.Builder
+	if level != "" {
+		fmt.Fprintf(&b, "%s%s\n\n", level, t.ident)
+	}
+	var entries []string
+	for _, s := range t.segments {
+		var segEntries []string
+		var hidden []bool
+		for i, f := range s.fields {
+			if s.header && i == 0 {
+				continue // the identity is the title
+			}
+			if f.hideEntry {
+				continue
+			}
+			if f.label == "include-note-id" {
+				segEntries = append(segEntries, m.transclude(strings.TrimSpace(f.value), append(stack, t.id)))
+				hidden = append(hidden, false)
+				continue
+			}
+			segEntries = append(segEntries, m.renderField(f))
+			hidden = append(hidden, f.label == "" || f.hideLabel)
+		}
+		entries = append(entries, joinMarker(segEntries, hidden)...)
+	}
+	b.WriteString(joinEntries(entries))
+	return b.String()
+}
+
+func (m *model) transclude(noteID string, stack []int64) string {
+	n := m.byKey[srcdoc.KindNote+"\x00"+srcdoc.Key(srcdoc.KindNote, noteID)]
+	if n == nil {
+		return fmt.Sprintf("*(missing note %s)*", noteID)
+	}
+	for _, id := range stack {
+		if id == n.id {
+			return fmt.Sprintf("*(include cycle cut: %s)*", noteID)
+		}
+	}
+	return strings.TrimRight(m.renderTopic(n, "", stack), "\n")
+}
+
+func (m *model) renderField(f field) string {
+	v := f.value
+	if strings.HasPrefix(v, "\n") {
+		// the value starts on its own line: every line, the first included,
+		// shares the indentation to strip
+		v = srcdoc.Dedent(v)
+		v = strings.TrimLeft(v, "\n")
+	} else {
+		v = srcdoc.Dedent(v)
+	}
+	v = m.inline(v)
+	if f.label == "" || f.hideLabel {
+		return v
+	}
+	if strings.HasPrefix(f.value, "\n") { // "| params:" then the list on the next lines
+		return "**" + f.label + ":**\n" + v
+	}
+	return "**" + f.label + ":** " + v
+}
+
+// joinMarker joins the entries of ONE marker: after a list-item entry, the
+// entries that follow in the same marker continue that item on the same line
+// (a hidden-label one prefixed by " - ", a labelled one by a blank), their
+// continuation lines indented to stay inside the item. Anything else stays a
+// separate entry.
+func joinMarker(entries []string, hidden []bool) []string {
+	var out []string
+	for i, e := range entries {
+		if i > 0 && isItem(entries[i-1]) && !isItem(e) && !strings.Contains(entries[i-1], "\n\n") && len(out) > 0 {
+			sep := " "
+			if hidden[i] {
+				sep = " - "
+			}
+			e = strings.ReplaceAll(e, "\n", "\n  ")
+			out[len(out)-1] += sep + e
+			entries[i] = out[len(out)-1] // keep the joined text as the previous item
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// inline replaces the inline markers of a value: ilinks become Markdown links,
+// any other {{label: value}} renders as its bold label.
+func (m *model) inline(v string) string {
+	v = ilinkRe.ReplaceAllStringFunc(v, func(s string) string {
+		g := ilinkRe.FindStringSubmatch(s)
+		kind, ident, text := g[1], strings.TrimSpace(g[2]), strings.TrimSpace(g[3])
+		if text == "" {
+			text = ident
+		}
+		if p := m.target(kind, ident); p != nil {
+			return "[" + text + "](" + p.file + ")"
+		}
+		return text
+	})
+	return inlineRe.ReplaceAllStringFunc(v, func(s string) string {
+		g := inlineRe.FindStringSubmatch(s)
+		label, _, hideLabel := canon(g[1])
+		if hideLabel {
+			return strings.TrimSpace(g[2])
+		}
+		return "**" + label + ":** " + strings.TrimSpace(g[2])
+	})
+}
+
+func canon(l string) (string, bool, bool) {
+	he, hl := false, false
+	if strings.HasPrefix(l, "_") && len(l) > 1 {
+		he = true
+		l = l[1:]
+	}
+	if strings.HasSuffix(l, "_") && len(l) > 1 {
+		hl = true
+		l = l[:len(l)-1]
+	}
+	return l, he, hl
+}
+
+func (m *model) target(kind, ident string) *page {
+	switch kind {
+	case "slug":
+		return m.bySlug[strings.ToLower(ident)]
+	case "tg":
+		return m.byGroup[ident]
+	}
+	k := srcdoc.HeaderKind(kind)
+	if k == "" {
+		return nil
+	}
+	if t := m.byKey[k+"\x00"+srcdoc.Key(k, ident)]; t != nil {
+		return m.pageOf[t.id]
+	}
+	return nil
+}
+
+// joinEntries separates entries with a blank line, except between two
+// consecutive list items, which stay one list.
+func joinEntries(entries []string) string {
+	var b strings.Builder
+	for i, e := range entries {
+		if i > 0 {
+			if isItem(entries[i-1]) && isItem(e) {
+				b.WriteString("\n")
+			} else {
+				b.WriteString("\n\n")
 			}
 		}
+		b.WriteString(e)
 	}
-	// members go in the order they were declared (document order)
-	kids := append([]int64(nil), m.members[t.ID]...)
-	sort.SliceStable(kids, func(a, b int) bool { return m.firstPos(kids[a]) < m.firstPos(kids[b]) })
-	var layout, others []int64
-	for _, k := range kids {
-		if m.byID[k].Kind == "gwst-member" {
-			layout = append(layout, k)
-		} else {
-			others = append(others, k)
-		}
+	if b.Len() > 0 {
+		b.WriteString("\n")
 	}
-	if len(layout) > 0 {
-		w.line("## Structure Definition")
-		w.blank()
-		w.line("**BEGIN STRUCTURE**")
-		for _, k := range layout {
-			w.line("- %s", m.memberLine(k))
-		}
-		w.line("**END STRUCTURE**")
-		w.blank()
-	}
-	if len(others) > 0 {
-		w.line("## Members")
-		w.blank()
-		for _, k := range others {
-			c := m.byID[k]
-			w.line("- *%s* %s", c.Kind, m.link(k, c.Ident))
-		}
-		w.blank()
-	}
-	if cmds := m.inTopic[t.ID]; len(cmds) > 0 {
-		w.line("## Commands")
-		w.blank()
-		for _, c := range cmds {
-			w.line("- %s", m.link(c, ""))
-		}
-		w.blank()
-	}
-	if refs := m.refs[t.ID]; len(refs) > 0 {
-		var lines []string
-		for _, r := range refs {
-			switch r.refType {
-			case "include":
-				// transcluded on the page, not listed
-			case "parent", "gwst-parent":
-				lines = append(lines, fmt.Sprintf("- %s: %s", r.refType, m.link(r.to, r.toIdent)))
-			case "ilink":
-				lines = append(lines, fmt.Sprintf("- link: %s", m.link(r.to, r.toIdent)))
-			case "see-also", "calls":
-				lines = append(lines, fmt.Sprintf("- %s: %s", r.refType, m.link(r.to, r.toIdent)))
-			}
-		}
-		if len(lines) > 0 {
-			w.line("## References")
-			w.blank()
-			for _, l := range lines {
-				w.line("%s", l)
-			}
-			w.blank()
-		}
-	}
-	return []byte(w.String())
+	return b.String()
 }
 
-func (m *model) renderSegment(w *md, t Topic, s segment) {
-	f := m.parsed[s.id]
-	if f == nil {
-		f = reparse(s.raw)
-	}
-	switch {
-	case t.Kind == "markdown-free":
-		for _, e := range f.Entities {
-			if v, ok := e.Field("body"); ok {
-				w.line("%s", strings.ReplaceAll(v, "\n", "\r\n"))
-			}
-		}
-	case t.Kind == "note":
-		for _, n := range f.Notes {
-			w.line("%s", strings.ReplaceAll(n.Body, "\n", "\r\n"))
-		}
-	case itemKinds[t.Kind]:
-		for _, e := range f.Entities {
-			for _, c := range e.Components {
-				w.line("`%s`", c.Ident)
-				w.blank()
-				m.renderFields(w, c.Fields)
-			}
-		}
-	default:
-		for _, e := range f.Entities {
-			m.renderFields(w, e.Fields)
-		}
-	}
-	w.blank()
+func isItem(s string) bool {
+	s = strings.TrimLeft(s, " ")
+	return strings.HasPrefix(s, "- ") || strings.HasPrefix(s, "* ")
 }
 
-// renderFields lays the fields of an entity out in reading order: syntax
-// first, the description, parameters, return, flags, examples, notes, then
-// everything else as "name: value" - unknown fields included, nothing is
-// dropped. see-also and ilink are rendered as references at the end of the
-// page, category in the header.
-func (m *model) renderFields(w *md, fields []scandoc.Field) {
-	var params, flags, rest []scandoc.Field
-	var desc, ret, syntax []string
-	var examples, notes, frees []string
-	for _, f := range fields {
-		name := strings.ToLower(f.Name)
-		first, _, _ := strings.Cut(name, " ")
-		switch first {
-		case "syntax", "xbase-syntax", "prototype":
-			syntax = append(syntax, f.Value)
-		case "desc":
-			desc = append(desc, f.Value)
-		case "param":
-			params = append(params, f)
-		case "return":
-			ret = append(ret, f.Value)
-		case "flag":
-			flags = append(flags, f)
-		case "example":
-			examples = append(examples, f.Value)
-		case "note":
-			notes = append(notes, f.Value)
-		case "markdown-free":
-			frees = append(frees, f.Value) // raw Markdown embedded in the entity: verbatim, no label
-		case "category", "see-also", "ilink", "calls", "parent", "gwst-parent", "topic", "body", "slug":
-			// header / references / file name: handled apart, not content
-		default:
-			rest = append(rest, f)
-		}
-	}
-	for _, s := range syntax {
-		w.line("%s", s)
-		w.blank()
-	}
-	for _, d := range desc {
-		w.line("%s", d)
-		w.blank()
-	}
-	if len(params) > 0 {
-		w.line("**Parameters**")
-		w.blank()
-		for _, p := range params {
-			_, pname, _ := strings.Cut(p.Name, " ")
-			w.line("- `%s` — %s", strings.TrimSpace(pname), p.Value)
-		}
-		w.blank()
-	}
-	for _, r := range ret {
-		w.line("**Returns** — %s", r)
-		w.blank()
-	}
-	if len(flags) > 0 {
-		w.line("**Flags**")
-		w.blank()
-		for _, f := range flags {
-			_, fname, _ := strings.Cut(f.Name, " ")
-			w.line("- `%s` — %s", strings.TrimSpace(fname), f.Value)
-		}
-		w.blank()
-	}
-	for _, e := range examples {
-		w.line("**Example**")
-		w.blank()
-		w.line("%s", strings.ReplaceAll(e, "\n", "\r\n"))
-		w.blank()
-	}
-	for _, n := range notes {
-		w.line("> %s", n)
-		w.blank()
-	}
-	for _, r := range frees {
-		w.line("%s", strings.ReplaceAll(r, "\n", "\r\n"))
-		w.blank()
-	}
-	for _, f := range rest {
-		w.line("**%s:** %s", f.Name, f.Value)
-	}
-	if len(rest) > 0 {
-		w.blank()
-	}
-}
-
-func (m *model) renderIndex() []byte {
-	var w md
-	w.line("# Reference index")
-	w.blank()
-	w.line("%d topics. One file per topic; members and commands are listed on their owner's page.", len(m.topics))
-	w.blank()
-	byKind := map[string][]Topic{}
-	var kinds []string
-	for _, t := range m.topics {
-		if _, ok := byKind[t.Kind]; !ok {
-			kinds = append(kinds, t.Kind)
-		}
-		byKind[t.Kind] = append(byKind[t.Kind], t)
-	}
-	sort.Strings(kinds)
+func (m *model) renderIndex() string {
+	var b strings.Builder
+	b.WriteString("# Index\n")
+	kinds := append([]string{}, srcdoc.Kinds...)
+	kinds = append(kinds, "group")
 	for _, k := range kinds {
-		ts := byKind[k]
-		sort.Slice(ts, func(a, b int) bool { return ts[a].Key < ts[b].Key })
-		w.line("## %s (%d)", k, len(ts))
-		w.blank()
-		for _, t := range ts {
-			w.line("- %s", m.link(t.ID, t.Ident))
+		var ps []*page
+		for _, p := range m.pages {
+			if p.kind == k {
+				ps = append(ps, p)
+			}
 		}
-		w.blank()
+		if len(ps) == 0 {
+			continue
+		}
+		sort.Slice(ps, func(i, j int) bool { return strings.ToLower(ps[i].title) < strings.ToLower(ps[j].title) })
+		fmt.Fprintf(&b, "\n## %s (%d)\n\n", k, len(ps))
+		for _, p := range ps {
+			fmt.Fprintf(&b, "- [%s](%s)\n", p.title, p.file)
+		}
 	}
-	return []byte(w.String())
+	return b.String()
 }

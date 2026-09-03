@@ -18,20 +18,33 @@ ot4xb-tool [-q] resolve -db <file.db>
 
 ### `compile` — one pass per source
 
-Every `-src` (a file, a glob, or a directory meaning its C/C++ sources) is
-scanned and written into the database under its path relative to `-root`
+Every `-src` (a file, a glob, or a directory: its C/C++ sources, then the
+`.prg/.ch` of it and its subfolders) is scanned with the Draft 4 scanner and
+written into the database under its path relative to `-root`
 (`source/TBinFile.cpp`; `\` becomes `/`; case-insensitive; alphabet `a-z 0-9
-- . _ /`). The order of the arguments is the parse order, and **the parse
+- . _ /`). C/C++ sources go first and the `.ch` headers last, so the
+annotations a header adds to an existing topic land after its main content;
+within that, the order of the arguments is the parse order, and **the parse
 order is the document order**.
 
-Compilation is **multi-pass and append-only per source**: a pass registers its
-file, deletes everything that file contributed before, and inserts it again —
-it never looks at the other files. So sources can be compiled in any number
-of runs, and recompiling one file replaces exactly its rows. A file keeps its
-id and its position across runs; a new file goes after the last.
+Compilation is **multi-pass and append-only per source**: a pass registers
+its file, deletes everything that file contributed before, and inserts it
+again — it never looks at the other files. A file keeps its id and its
+position across runs; a new file goes after the last. Each file is one
+transaction: the whole ot4xb tree compiles in a few seconds.
 
-Nothing is resolved during compilation: a reference to something in another
-file — or in a file not compiled yet — is stored as written.
+What one pass writes: a **topic** per identity seen (created the first time,
+reused after — a second block with the same identity, in this file or
+another, only appends), a **segment** per marker (its raw text), a **field**
+per `label: value` entry in written order, a **reference** per
+`include-note-id` and per inline `{{ilink: …}}`, a **category** row per item
+of every `category:` comma list. `_slug_` and `_tg_` are applied with the
+rules of the spec: a computed slug is stored when the topic has none, an
+explicit one replaces it and sets the flag, a second different explicit one
+is refused and reported (the first stays); all the blocks of a topic group
+must agree on its slug. Nothing is resolved during compilation: a reference
+to something in another file — or in a file not compiled yet — is stored as
+written.
 
 ### `resolve` — the a-posteriori step
 
@@ -42,51 +55,49 @@ dropped and recomputed every time.
 
 | check | rule |
 |---|---|
-| missing target | a reference whose `(kind, identity)` exists nowhere; `class` and `structure` are one family, either name finds either |
-| include cycle | a shared note that includes itself, directly or through others (transclusion cannot loop); repetitions are fine |
-| duplicate definition | an identity with several segments where the kind cannot reopen — `class`, `structure` and `cpp-class` may be documented in several blocks or files, nothing else may |
-| skipped | `see-also` and `calls` carry bare names and are not resolved yet; they are migrating to `ilink` |
+| missing target | `<kind ident>` looked up with the EXACT kind (no families); `<slug name>` among topic and group slugs, case-insensitively; `<tg name>` among the groups |
+| include cycle | a note that includes itself, directly or through others; repetitions are fine |
+| duplicate slug | two pages (topics without a group, or groups) sharing a slug case-insensitively; `gendoc` still writes both, suffixing the later file |
+
+A topic with segments from several files is never an issue: that is how
+scattered content and C++ overloads work.
 
 ### The tables
 
 | table | columns | what |
 |---|---|---|
 | `sources` | `idsrc`, `pos`, `src` | one row per file; `pos` = parse order, stable across runs; `src` unique, case-insensitive |
-| `topics` | `idtopic`, `kind`, `key`, `ident` | one row per documented thing, created the first time a segment of it is seen; `(kind, key)` unique |
-| `segments` | `idseg`, `idtopic`, `idsrc`, `pos`, `line`, `raw`, `resolved`, `is_resolved` | one row per contribution of a file to a topic |
-| `refs` | `idseg`, `idsrc`, `idtopic_in`, `reftokind`, `reftoident`, `reftype` | who references whom |
-| `issues` | `idsrc`, `idseg`, `line`, `severity`, `code`, `message` | the log, in the database |
+| `topics` | `idtopic`, `kind`, `key`, `ident`, `slug`, `flags`, `idtg` | one row per documented thing; `(kind, key)` unique; `flags` bit 0 = slug written, not computed; `idtg` = its topic group or 0 |
+| `topic_groups` | `idtg`, `idsrc`, `pos`, `name`, `key`, `slug`, `flags` | one row per `_tg_` name: the topics that render into one page |
+| `segments` | `idseg`, `idtopic`, `idsrc`, `pos`, `line`, `raw`, `resolved`, `is_resolved` | one row per marker of a topic |
+| `fields` | `idsrc`, `idseg`, `seq`, `label`, `value`, `hide_entry`, `hide_label` | every `label: value` of every segment, in written order, label canonical, visibility kept |
+| `refs` | `idseg`, `idsrc`, `idtopic_in`, `reftokind`, `reftoident`, `reftype` | who references whom (`include`, `ilink`); `reftokind` is a kind, `slug` or `tg` |
+| `issues` | `idsrc`, `idseg`, `line`, `severity`, `code`, `message` | the log, in the database (`scan/…`, `compile/…`, `resolve/…`) |
 | `topic_category` | `idsrc`, `idtopic`, `category` | N:N — a topic belongs to one or more categories (`winapi/structures`) |
-| `meta` | `key`, `value` | schema version, project data |
+| `meta` | `key`, `value` | schema version (2), project data |
 
 Every row carries `idsrc`, which is what makes "replace this file" a plain
-delete. A **topic** is the whole documented thing; a **segment** is what one
-file says about it, so a class documented in three places is three segments
-of one topic, in order. `segments.pos` packs the file position (high bits)
-and the position inside the file (low 20 bits) so a topic's segments sort
-with a plain `ORDER BY pos`. `raw` is the marker text of the segment,
-verbatim and in order — never the C++ between markers; it is re-parsed by
-the same scanner when a product is generated. `resolved` and `is_resolved`
-are reserved for the a-posteriori content resolution (not built yet).
+delete. A **topic** is the whole documented thing; a **segment** is one
+marker of it, so a class documented in three places is the union of its
+markers, in order. `segments.pos` packs the file position (high bits) and the
+position inside the file (low 20 bits) so a topic's segments sort with a
+plain `ORDER BY pos`. `raw` is the marker text verbatim; `fields` is the same
+content already split, so the description of anything is one `SELECT` away
+(a short description, an index, a table by category: queries, not parsing).
+`resolved` and `is_resolved` are reserved.
 
-**Keys.** `key` is the normalized identity of the topic's family: Xbase++
-symbols (functions, classes, structures, commands and their members) in
-upper case — their canonical form in the `.xbmac` and the export table; C and
-C++ symbols as written, case-sensitive; doc-internal ids (notes, topics) in
-lower case. `ident` keeps the first spelling seen, for display. Components
-are topics too: `method LARGE_INTEGER:New64`.
+**Keys.** `key` is the normalized identity: Xbase++ symbols (functions,
+classes) in upper case — their canonical form in the `.xbmac` and the export
+table; C and C++ symbols as written, case-sensitive; doc ids (notes, topics)
+in lower case. `ident` keeps the first spelling seen, for display. A topic
+has no file and line of its own: its location is its first segment.
 
-**Categories** come from the `category:` fields; there is no categories
-table — a category exists because it is used, the list is
-`SELECT DISTINCT category FROM topic_category`, and the `/` in the path is the
-hierarchy.
+**Categories** come from the `category:` fields (comma lists allowed); there
+is no categories table — a category exists because it is used, the list is
+`SELECT DISTINCT category FROM topic_category`, and the `/` in the path is
+the hierarchy.
 
 The database is single-process by design: one connection, no concurrency;
 another process wanting the data works on its own copy. Reads are always
-materialized (`QueryAll`), never a live cursor.
-
-### What is generated from it
-
-Nothing yet: the reference Markdown (one file per topic), the agent lookup
-over `doc_fts` and the changelog from `since`/`deprecated` are the next
-steps, and all of them are a query plus a template over this database.
+materialized (`QueryAll`), never a live cursor. A database of another schema
+version is refused: delete it and compile again.

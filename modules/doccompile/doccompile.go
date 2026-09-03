@@ -94,7 +94,15 @@ func CompileFile(db *docdb.DB, src string, f *srcdoc.File) (idsrc int64, err err
 	if err != nil {
 		return 0, err
 	}
-	if err := db.ReplaceSource(idsrc); err != nil {
+	if _, err := db.Exec("BEGIN"); err != nil {
+		return 0, err
+	}
+	defer func() {
+		if err != nil {
+			db.Exec("ROLLBACK")
+		}
+	}()
+	if err = db.ReplaceSource(idsrc); err != nil {
 		return 0, err
 	}
 	for _, is := range f.Issues {
@@ -127,6 +135,9 @@ func CompileFile(db *docdb.DB, src string, f *srcdoc.File) (idsrc int64, err err
 				}
 			}
 		}
+	}
+	if _, err = db.Exec("COMMIT"); err != nil {
+		return 0, err
 	}
 	return idsrc, nil
 }

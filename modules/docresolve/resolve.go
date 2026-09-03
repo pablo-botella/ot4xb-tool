@@ -3,36 +3,34 @@
 // topics and records what is broken as issues. It is re-runnable: its own
 // issues (code "resolve/...") are dropped and recomputed every time.
 //
-// Rules (spec Draft 3, "resolve"):
-//   - A reference target is looked up by (kind, key) with the key rule of the
-//     target's family. class and structure are ONE family ("a todos los
-//     efectos son clases"): a target written as either resolves to either.
-//   - Missing target -> issue "resolve/missing" on the source that wrote the
-//     reference. For navigation links this is the only check.
-//   - include (transclusion): cycles are forbidden -> issue "resolve/cycle".
+// Rules (spec Draft 4):
+//   - A reference target is one of: <kind ident> looked up by (kind, key) with
+//     the EXACT kind (no families: a function and a c-function of the same
+//     name are two topics); <slug name> looked up among topic and group slugs,
+//     case-insensitively; <tg name> looked up among the topic groups.
+//   - Missing target -> issue "resolve/missing" on the segment that wrote it.
+//   - include (transclusion) cycles are forbidden -> issue "resolve/cycle".
 //     Repetitions are fine.
-//   - see-also and calls are stored unqualified and are NOT resolved for now.
-//   - A topic with several segments is legitimate for class / structure /
-//     cpp-class (REOPEN) and an issue "resolve/duplicate" for any other kind.
-//
-// Content resolution (the `resolved` blob and its flag) is a later operation;
-// this step only judges references and identities.
+//   - Two pages (topics without a group, or groups) with the same slug,
+//     case-insensitively -> issue "resolve/slug-duplicate" on the later one;
+//     the generator will still write both, suffixing the later file.
+//   - A topic may have any number of segments from any number of sources: that
+//     is how scattered content and C++ overloads work. Never an issue.
 package docresolve
 
 import (
 	"fmt"
+	"strings"
 
-	"github.com/pablo-botella/ot4xb-tool/modules/doccompile"
 	"github.com/pablo-botella/ot4xb-tool/modules/docdb"
 )
 
 // Report summarizes one resolve run.
 type Report struct {
-	Refs       int // references examined
-	Skipped    int // unqualified references left alone (see-also, calls)
-	Missing    int // references whose target does not exist
-	Cycles     int // include cycles found
-	Duplicates int // extra segments on non-reopenable topics
+	Refs     int // references examined
+	Missing  int // references whose target does not exist
+	Cycles   int // include cycles found
+	DupSlugs int // pages sharing a slug
 }
 
 type topicKey struct{ kind, key string }
@@ -43,160 +41,143 @@ type ref struct {
 	refType            string
 }
 
-// family returns the kinds to try for a target written with kind k.
-func family(k string) []string {
-	switch k {
-	case "class", "structure":
-		return []string{"class", "structure"}
-	}
-	return []string{k}
-}
-
-func reopenable(kind string) bool {
-	return kind == "class" || kind == "structure" || kind == "cpp-class"
-}
-
 // Resolve runs the step over an open database.
 func Resolve(db *docdb.DB) (Report, error) {
 	var rep Report
 	if _, err := db.Exec(`DELETE FROM issues WHERE code LIKE 'resolve/%'`); err != nil {
 		return rep, err
 	}
-
-	// the identity graph
+	// ---- collect everything first, write nothing while reading
 	topics := map[topicKey]int64{}
-	kindOf := map[int64]string{}
-	identOf := map[int64]string{}
-	rows, err := db.QueryAll(`SELECT idtopic, kind, key, ident FROM topics`)
+	slugs := map[string][]string{} // lower slug -> pages ("topic kind ident" / "group name")
+	rows, err := db.QueryAll(`SELECT idtopic, kind, key, ident, slug, idtg FROM topics ORDER BY idtopic`)
+	if err != nil {
+		return rep, err
+	}
+	topicIdent := map[int64]string{}
+	for _, r := range rows {
+		id := r[0].(int64)
+		kind, key, ident, slug := r[1].(string), r[2].(string), r[3].(string), r[4].(string)
+		topics[topicKey{kind, key}] = id
+		topicIdent[id] = kind + " " + ident
+		if r[5].(int64) == 0 && slug != "" {
+			slugs[strings.ToLower(slug)] = append(slugs[strings.ToLower(slug)], kind+" "+ident)
+		}
+	}
+	groups := map[string]bool{}
+	rows, err = db.QueryAll(`SELECT key, slug FROM topic_groups ORDER BY idtg`)
 	if err != nil {
 		return rep, err
 	}
 	for _, r := range rows {
-		id, kind, key, ident := r[0].(int64), r[1].(string), r[2].(string), r[3].(string)
-		topics[topicKey{kind, key}] = id
-		kindOf[id] = kind
-		identOf[id] = ident
+		groups[r[0].(string)] = true
+		if s := r[1].(string); s != "" {
+			slugs[strings.ToLower(s)] = append(slugs[strings.ToLower(s)], "group "+r[0].(string))
+		}
 	}
-
-	// segment lines, for citing
-	lineOf := map[int64]int64{}
-	if rows, err = db.QueryAll(`SELECT idseg, line FROM segments`); err != nil {
+	rows, err = db.QueryAll(`SELECT idseg, idsrc, idtopic_in, reftokind, reftoident, reftype FROM refs ORDER BY idseg`)
+	if err != nil {
 		return rep, err
 	}
-	for _, r := range rows {
-		lineOf[r[0].(int64)] = r[1].(int64)
-	}
-
-	// the references
 	var refs []ref
-	if rows, err = db.QueryAll(`SELECT idseg, idsrc, idtopic_in, reftokind, reftoident, reftype FROM refs`); err != nil {
-		return rep, err
-	}
 	for _, r := range rows {
 		refs = append(refs, ref{r[0].(int64), r[1].(int64), r[2].(int64), r[3].(string), r[4].(string), r[5].(string)})
 	}
-
-	// lookup resolves a written target to its topic id (0 = none) trying the
-	// kinds of its family with each kind's key rule.
-	lookup := func(toKind, toIdent string) int64 {
-		for _, k := range family(toKind) {
-			if id, ok := topics[topicKey{k, doccompile.Key(k, toIdent)}]; ok {
-				return id
-			}
-		}
-		return 0
-	}
-
-	// 1. existence
-	type edge struct {
-		to int64
-		r  ref
-	}
-	includes := map[int64][]edge{} // from topic -> resolved include edges (for cycles)
-	for i := range refs {
-		r := refs[i]
-		rep.Refs++
-		if r.toKind == "" || r.refType == "see-also" || r.refType == "calls" {
-			rep.Skipped++
-			continue
-		}
-		found := lookup(r.toKind, r.toIdent)
-		if found == 0 {
-			rep.Missing++
-			msg := fmt.Sprintf("%s %s: target <%s %s> does not exist", r.refType, identOf[r.from], r.toKind, r.toIdent)
-			if err := db.AddIssue(r.idsrc, r.idseg, lineOf[r.idseg], "error", "resolve/missing", msg); err != nil {
-				return rep, err
-			}
-			continue
-		}
-		if r.refType == "include" {
-			includes[r.from] = append(includes[r.from], edge{found, r})
-		}
-	}
-
-	// 2. include cycles: DFS over topic -> included topics
-	const (
-		white = 0
-		gray  = 1
-		black = 2
-	)
-	color := map[int64]int{}
-	var stack []int64
-	var visit func(id int64) error
-	visit = func(id int64) error {
-		color[id] = gray
-		stack = append(stack, id)
-		for _, e := range includes[id] {
-			to, r := e.to, e.r
-			switch color[to] {
-			case white:
-				if err := visit(to); err != nil {
-					return err
-				}
-			case gray:
-				rep.Cycles++
-				path := ""
-				for _, s := range stack {
-					path += identOf[s] + " -> "
-				}
-				msg := "include cycle: " + path + identOf[to]
-				if err := db.AddIssue(r.idsrc, r.idseg, lineOf[r.idseg], "error", "resolve/cycle", msg); err != nil {
-					return err
-				}
-			}
-		}
-		stack = stack[:len(stack)-1]
-		color[id] = black
-		return nil
-	}
-	for id := range includes {
-		if color[id] == white {
-			if err := visit(id); err != nil {
-				return rep, err
-			}
-		}
-	}
-
-	// 3. duplicates: several segments on a non-reopenable topic
-	if rows, err = db.QueryAll(`SELECT s.idtopic, s.idseg, s.idsrc, s.line FROM segments s ORDER BY s.idtopic, s.pos`); err != nil {
+	segLine := map[int64]int64{}
+	rows, err = db.QueryAll(`SELECT idseg, line FROM segments`)
+	if err != nil {
 		return rep, err
 	}
-	type segRow struct{ tp, seg, src, line int64 }
-	var dups []segRow
-	var prevTopic int64 = -1
-	for _, row := range rows {
-		r := segRow{row[0].(int64), row[1].(int64), row[2].(int64), row[3].(int64)}
-		if r.tp == prevTopic && !reopenable(kindOf[r.tp]) {
-			dups = append(dups, r)
-		}
-		prevTopic = r.tp
+	for _, r := range rows {
+		segLine[r[0].(int64)] = r[1].(int64)
 	}
-	for _, r := range dups {
-		rep.Duplicates++
-		msg := fmt.Sprintf("%s %s is defined again (only class/structure/cpp-class may reopen)", kindOf[r.tp], identOf[r.tp])
-		if err := db.AddIssue(r.src, r.seg, r.line, "error", "resolve/duplicate", msg); err != nil {
+	// ---- judge
+	type issue struct {
+		idsrc, idseg, line int64
+		code, msg          string
+	}
+	var issues []issue
+	includes := map[int64][]int64{} // topic -> included note topics
+	for _, rf := range refs {
+		rep.Refs++
+		var found bool
+		var target int64
+		switch rf.toKind {
+		case "slug":
+			found = len(slugs[strings.ToLower(rf.toIdent)]) > 0
+		case "tg":
+			found = groups[rf.toIdent]
+		default:
+			target, found = topics[topicKey{rf.toKind, rf.toIdent}]
+		}
+		if !found {
+			rep.Missing++
+			issues = append(issues, issue{rf.idsrc, rf.idseg, segLine[rf.idseg], "resolve/missing",
+				fmt.Sprintf("%s target <%s %s> does not exist", rf.refType, rf.toKind, rf.toIdent)})
+			continue
+		}
+		if rf.refType == "include" {
+			includes[rf.from] = append(includes[rf.from], target)
+		}
+	}
+	// include cycles: a note that (transitively) includes itself
+	for from := range includes {
+		if path := findCycle(includes, from); path != nil {
+			rep.Cycles++
+			names := make([]string, 0, len(path))
+			for _, id := range path {
+				names = append(names, topicIdent[id])
+			}
+			// blame the segment(s) of `from` that include the next hop
+			for _, rf := range refs {
+				if rf.from == from && rf.refType == "include" && topics[topicKey{rf.toKind, rf.toIdent}] == path[1] {
+					issues = append(issues, issue{rf.idsrc, rf.idseg, segLine[rf.idseg], "resolve/cycle",
+						"include cycle: " + strings.Join(names, " -> ")})
+				}
+			}
+		}
+	}
+	for s, pages := range slugs {
+		if len(pages) > 1 {
+			rep.DupSlugs++
+			issues = append(issues, issue{0, 0, 0, "resolve/slug-duplicate",
+				fmt.Sprintf("slug %q is shared by %s", s, strings.Join(pages, ", "))})
+		}
+	}
+	// ---- write
+	for _, is := range issues {
+		if err := db.AddIssue(is.idsrc, is.idseg, is.line, "error", is.code, is.msg); err != nil {
 			return rep, err
 		}
 	}
 	return rep, nil
+}
+
+// findCycle returns the path from start back to itself, or nil.
+func findCycle(g map[int64][]int64, start int64) []int64 {
+	var path []int64
+	seen := map[int64]bool{}
+	var walk func(n int64) bool
+	walk = func(n int64) bool {
+		path = append(path, n)
+		for _, m := range g[n] {
+			if m == start {
+				path = append(path, m)
+				return true
+			}
+			if seen[m] {
+				continue
+			}
+			seen[m] = true
+			if walk(m) {
+				return true
+			}
+		}
+		path = path[:len(path)-1]
+		return false
+	}
+	if walk(start) {
+		return path
+	}
+	return nil
 }

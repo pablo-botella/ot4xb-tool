@@ -28,12 +28,12 @@ go get github.com/pablo-botella/ot4xb-tool    # library
 | `xbmac2h` | from a `.xbmac` registration list, the export/function-list headers and the two `.def` files |
 | `def2lib20` | an x86 COFF import library (`.lib`, long format, ALINK compatible) from a `.def` |
 | `cbk2obj` | an Xbase++ callback script (`.cbk`) compiled into a linkable x86 COFF object (`.obj`) |
-| `scandoc` | scan C/C++ sources for `/*{{ }}*/` documentation markers: print the model and diagnostics |
+| `scandoc` | scan sources for `/*{{ }}*/` documentation markers (Draft 4): list the topics and the issues |
 | `srcsplit` | split an authoring source into its code projection (no doc blocks) and its doc projection |
 | `doccheck` | cross-check the documented surface against the `.xbmac` registration list |
 | `compile` | compile documented sources into the intermediate SQLite database (any number of passes) |
-| `resolve` | the a-posteriori step over that database: broken references, include cycles, duplicates |
-| `gendoc` | the reference Markdown from that database: one file per topic (slugs) plus an index |
+| `resolve` | the a-posteriori step over that database: broken references, include cycles, slug clashes |
+| `gendoc` | the reference Markdown from that database: one file per topic or topic group (slugs) plus an index |
 
 The build-side commands (`-bs`, `vbuild`, `xbmac2h`, `def2lib20`, `cbk2obj`)
 replace the legacy Harbour/xppcbk tools of the ot4xb build, byte-compatible
@@ -399,74 +399,100 @@ other. See the ot4xb sources for the scripts in use.
 
 ## `scandoc` — the in-source documentation scanner
 
-ot4xb documents itself in its C/C++ sources: the line that registers a thing
+ot4xb documents itself in its sources: the line that registers a thing
 documents it, in `/*{{ … }}*/` comment markers next to the code. `scandoc`
-parses those markers into a model and reports what is wrong, without ever
-touching a source:
+parses those markers (the Draft 4 authoring model of the spec) and reports
+what is wrong, without ever touching a source:
 
 ```
-ot4xb-tool [-q] scandoc -src <file|dir> [-fields] [-tags [file]]
+ot4xb-tool [-q] scandoc -src <file|dir> [-fields] [-issues]
 ```
 
 | option | meaning |
 |---|---|
-| `-src` | one file, or a directory: its `.cpp/.c/.h/.hpp` files (not recursive), in name order |
-| `-fields` | print every field of every entity, not only the identities |
-| `-tags` | tag inventory (debug): alone it prints the vocabulary in use; with a file it writes every occurrence there, one per line |
+| `-src` | one file, or a directory: its `.cpp/.c/.h/.hpp` files, then the `.prg/.ch` of it and its subfolders (`ch/`), sorted — the same order `compile` uses |
+| `-fields` | print every field of every marker, not only the topics |
+| `-issues` | print only the issues |
 
-Output: one line per documented entity (`start-end  kind  identity`, with its
-components below), then the diagnostics as `file:line: severity: message` so
-an editor can jump to them. Sources are read as bytes (Windows-1252) and any
-line ending is accepted; a file whose lines are not all CRLF gets one warning
-(CRLF is the convention, required in Xbase++ sources).
+Output: one line per topic (`start-end  kind  identity  (compact|composed,
+N markers)`), then every issue as `file:line: severity: code: message` so an
+editor can jump to it. Exit code 1 when any file has an error. Sources are
+read as bytes (Windows-1252) and any line ending is accepted; a file whose
+lines are not all CRLF gets one warning (CRLF is the convention, required in
+Xbase++ sources).
 
-### The grammar, in short
+### The model, in short
 
-A marker is `/*{{ label: value | field: value | … }}*/`, one or more lines; a
-`|` starts a field, and a `|` inside a backtick code span is text. The first
-label names the **entity kind** and its identity:
+Everything documented is a **topic** — a page, an identity, a link target —
+of one of nine kinds:
 
 | kind | identity | world |
 |---|---|---|
 | `function`, `internal-function` | the Xbase++ name | Xbase++ (case-insensitive) |
 | `c-function`, `debug-c-function` | the C symbol | C (case-sensitive) |
-| `cpp-function` | `[ns::]name(param-types)`, one per overload | C++ (case-sensitive) |
-| `class` (label `class-name`), `structure` | the class name; a structure is a class plus its binary `gwst-member`s | Xbase++ |
+| `cpp-function` | `name(param-types)`, one topic per overload | C++ (case-sensitive) |
+| `class` (header label `class-name`) | the class name; a GWST structure is a class too | Xbase++ |
 | `cpp-class` | the C++ class | C++ |
-| `topic` | a doc-internal id; its body is free content | doc (lower-case) |
-| `command` | an id; lives inside a topic | Xbase++ |
+| `note-id` | a doc id; a note is a topic used by `include-note-id` | doc (lower-case) |
+| `topic` | a doc id; an amorphous page (a chapter, a file header, a command set) | doc (lower-case) |
 
-An entity is either **compact** (everything inline in one marker) or a
-**scope**: `/*{{begin-<kind>}}*/`, the header marker, the real code, and
-`/*{{end-<kind>}}*/`. Inside a class or structure scope the auxiliaries are
-their own markers — `method`, `ivar`, `property`, `class-method`, `class-var`,
-`class-property`, `gwst-member` — identified as `Class:member` (a method
-keeps its authored signature for display; the name before `(` is the
-identity).
+**Everything else is content** of the enclosing topic — members, methods,
+properties, commands, parameters, notes — never a topic and never a link
+target. A topic is either **compact** (one marker holds it all) or
+**composed**: `/*{{begin-<kind>}}*/`, its header marker, the real code with
+the content markers next to the lines they document, `/*{{end-<kind>}}*/`.
+Content outside a topic is an error.
 
-Fields are an open vocabulary (`syntax`, `desc`, `param x`, `return`,
-`example`, `see-also`, `category`, `since`, `deprecated`, `parent`, `ilink`,
-…): unknown names are kept and transported, never dropped. Values are
-Markdown; a ``` fence keeps its content verbatim.
+```
+/*{{begin-class}}*/
+/*{{class-name_: WAPIST_POINT
+            | _slug_: wapist_point
+            | class-function: WAPIST_POINT
+            | parent: {{ilink: <class gwst> gwst}}
+            | category: winapi/structures
+            | desc: Wrapper over the WinApi POINT structure.
+   }}*/
+/*{{|:**BEGIN STRUCTURE  POINT** }}*/
+XB_BEGIN_STRUCTURE ( POINT )
+   /*{{|member_: - MEMBER LONG x | desc_: x coordinate. }}*/
+   _XBST_LONG ( x )
+XB_END_STRUCTURE
+/*{{|:**END STRUCTURE** }}*/
+/*{{include-note-id: wapist-map}}*/
+/*{{end-class}}*/
+```
 
-**Shared notes** are written once and pulled in by id: the compact form
-`/*{{note-id: X |: body | note: caveat | include-note-id: dep}}*/`, or a
-composed block `/*{{begin-note | note-id: X}}*/` … `/*{{end-note}}*/` whose
-`/*{{note: …}}*/` fragments, scattered through the code they annotate, make
-up the body in order. An entity includes a note with a loose
-`/*{{include-note-id: X}}*/` inside its scope. `| ilink: <kind id> text` is
-an internal link to any entity by kind and identity. A
-`/*{{begin-markdown-free}}*/` … `/*{{end-markdown-free}}*/` block is raw
-content nothing inside is parsed.
+- A marker is `label: value | label: value …`, one or more lines: a field
+  starts at a `|` that begins a line or follows a blank, outside backticks,
+  followed by an optional label and `:`. A `|` inside a code span or a fenced
+  block is text. Values are Markdown, continuation lines verbatim.
+- The header's first entry is the identity (`kind: ident`). A marker that
+  starts with `|` is a **fragment** of the open topic; `|:` is text placed
+  right there. `include-note-id: X` transcludes note X at that position.
+- **Visibility** is in the label's first and last underscore: `desc_` shows
+  the value without its label, `_todo` hides the whole entry, `_slug_` is
+  hidden both ways but still a field the tool reads. Only the first and the
+  last underscore count; they are stripped before the label is recognized.
+- The only labels the tool interprets: the identity, `slug` (the page's file
+  name; computed from kind and key when absent), `tg` (topic group: every
+  topic with the same `_tg_` renders into one page — the C++ overloads),
+  `category` (comma list allowed) and `include-note-id`. Everything else
+  renders as written, in written order.
+- **Links**: `{{ilink: <kind ident> text}}`, `{{ilink: <slug name> text}}`,
+  `{{ilink: <tg name> text}}` inside any value; the kind is exact (a
+  `function` and a `c-function` of the same name are two topics). Markdown
+  links stay for external URLs.
+- **Scattered content**: a later block with the same identity — same file or
+  another — adds its content to the same topic, in parse order. It carries
+  the identity and the new content only; nothing already written is repeated.
 
 ### What it checks
 
-Grammar errors (unclosed markers, mismatched scopes, missing identities,
-duplicate identities per kind, duplicate `mangled-name`), lint (line length,
-non-ASCII, non-CRLF), migration debt (`todo` fields, retired forms), and —
-across the whole directory — that every `include-note-id` and `ilink` target
-exists, that note inclusion has no cycles, and that no non-reopenable identity
-is defined twice.
+Marker grammar (unterminated markers, unknown kinds, a head that is not a
+topic kind, stray or mismatched `begin`/`end`, a scope without a header or
+with two, content before the header or outside any topic), plus the CRLF
+warning. Cross-file checks — missing link targets, include cycles, slug
+clashes — belong to `resolve`, over the compiled database.
 
 ## `srcsplit` — the two projections of an authoring source
 
@@ -534,9 +560,9 @@ prints a summary plus one line per gap:
 
 | finding | meaning |
 |---|---|
-| `UNDOCUMENTED function NAME (SRC: file.cpp)` | registered with `_XPP_REG_FUN_` / `_XPP_REG_WMAC` and no `function:`, `internal-function:`, `class` or `structure` documents it — an Xbase++ class name is itself a registered function (its constructor), so a class doc counts |
-| `UNDOCUMENTED structure NAME` | a `_XPP_REG_WST_` with no `structure:` / `class-name:` |
-| `UNDOCUMENTED c-function name` | a `_CDECL_EXPORT_` with no `c-function:` (case-sensitive) |
+| `UNDOCUMENTED function NAME (SRC: file.cpp)` | registered with `_XPP_REG_FUN_` / `_XPP_REG_WMAC` and no `function`, `internal-function` or `class` topic documents it — an Xbase++ class name is itself a registered function (its constructor), so a class doc counts |
+| `UNDOCUMENTED structure NAME` | a `_XPP_REG_WST_` with no `class` topic (a GWST structure is a class) |
+| `UNDOCUMENTED c-function name` | a `_CDECL_EXPORT_` with no `c-function` / `debug-c-function` topic (case-sensitive) |
 | `UNREGISTERED function name (file:line)` | with `-full`: documented as a function but not in the list — stale doc, a wrong kind, or a name the list spells otherwise |
 
 Only functions are checked in reverse: structures and C functions reach the
@@ -564,20 +590,33 @@ ot4xb-tool [-q] resolve -db <file.db>
 
 ### `compile` — one pass per source
 
-Every `-src` (a file, a glob, or a directory meaning its C/C++ sources) is
-scanned and written into the database under its path relative to `-root`
+Every `-src` (a file, a glob, or a directory: its C/C++ sources, then the
+`.prg/.ch` of it and its subfolders) is scanned with the Draft 4 scanner and
+written into the database under its path relative to `-root`
 (`source/TBinFile.cpp`; `\` becomes `/`; case-insensitive; alphabet `a-z 0-9
-- . _ /`). The order of the arguments is the parse order, and **the parse
+- . _ /`). C/C++ sources go first and the `.ch` headers last, so the
+annotations a header adds to an existing topic land after its main content;
+within that, the order of the arguments is the parse order, and **the parse
 order is the document order**.
 
-Compilation is **multi-pass and append-only per source**: a pass registers its
-file, deletes everything that file contributed before, and inserts it again —
-it never looks at the other files. So sources can be compiled in any number
-of runs, and recompiling one file replaces exactly its rows. A file keeps its
-id and its position across runs; a new file goes after the last.
+Compilation is **multi-pass and append-only per source**: a pass registers
+its file, deletes everything that file contributed before, and inserts it
+again — it never looks at the other files. A file keeps its id and its
+position across runs; a new file goes after the last. Each file is one
+transaction: the whole ot4xb tree compiles in a few seconds.
 
-Nothing is resolved during compilation: a reference to something in another
-file — or in a file not compiled yet — is stored as written.
+What one pass writes: a **topic** per identity seen (created the first time,
+reused after — a second block with the same identity, in this file or
+another, only appends), a **segment** per marker (its raw text), a **field**
+per `label: value` entry in written order, a **reference** per
+`include-note-id` and per inline `{{ilink: …}}`, a **category** row per item
+of every `category:` comma list. `_slug_` and `_tg_` are applied with the
+rules of the spec: a computed slug is stored when the topic has none, an
+explicit one replaces it and sets the flag, a second different explicit one
+is refused and reported (the first stays); all the blocks of a topic group
+must agree on its slug. Nothing is resolved during compilation: a reference
+to something in another file — or in a file not compiled yet — is stored as
+written.
 
 ### `resolve` — the a-posteriori step
 
@@ -588,100 +627,102 @@ dropped and recomputed every time.
 
 | check | rule |
 |---|---|
-| missing target | a reference whose `(kind, identity)` exists nowhere; `class` and `structure` are one family, either name finds either |
-| include cycle | a shared note that includes itself, directly or through others (transclusion cannot loop); repetitions are fine |
-| duplicate definition | an identity with several segments where the kind cannot reopen — `class`, `structure` and `cpp-class` may be documented in several blocks or files, nothing else may |
-| skipped | `see-also` and `calls` carry bare names and are not resolved yet; they are migrating to `ilink` |
+| missing target | `<kind ident>` looked up with the EXACT kind (no families); `<slug name>` among topic and group slugs, case-insensitively; `<tg name>` among the groups |
+| include cycle | a note that includes itself, directly or through others; repetitions are fine |
+| duplicate slug | two pages (topics without a group, or groups) sharing a slug case-insensitively; `gendoc` still writes both, suffixing the later file |
+
+A topic with segments from several files is never an issue: that is how
+scattered content and C++ overloads work.
 
 ### The tables
 
 | table | columns | what |
 |---|---|---|
 | `sources` | `idsrc`, `pos`, `src` | one row per file; `pos` = parse order, stable across runs; `src` unique, case-insensitive |
-| `topics` | `idtopic`, `kind`, `key`, `ident` | one row per documented thing, created the first time a segment of it is seen; `(kind, key)` unique |
-| `segments` | `idseg`, `idtopic`, `idsrc`, `pos`, `line`, `raw`, `resolved`, `is_resolved` | one row per contribution of a file to a topic |
-| `refs` | `idseg`, `idsrc`, `idtopic_in`, `reftokind`, `reftoident`, `reftype` | who references whom |
-| `issues` | `idsrc`, `idseg`, `line`, `severity`, `code`, `message` | the log, in the database |
+| `topics` | `idtopic`, `kind`, `key`, `ident`, `slug`, `flags`, `idtg` | one row per documented thing; `(kind, key)` unique; `flags` bit 0 = slug written, not computed; `idtg` = its topic group or 0 |
+| `topic_groups` | `idtg`, `idsrc`, `pos`, `name`, `key`, `slug`, `flags` | one row per `_tg_` name: the topics that render into one page |
+| `segments` | `idseg`, `idtopic`, `idsrc`, `pos`, `line`, `raw`, `resolved`, `is_resolved` | one row per marker of a topic |
+| `fields` | `idsrc`, `idseg`, `seq`, `label`, `value`, `hide_entry`, `hide_label` | every `label: value` of every segment, in written order, label canonical, visibility kept |
+| `refs` | `idseg`, `idsrc`, `idtopic_in`, `reftokind`, `reftoident`, `reftype` | who references whom (`include`, `ilink`); `reftokind` is a kind, `slug` or `tg` |
+| `issues` | `idsrc`, `idseg`, `line`, `severity`, `code`, `message` | the log, in the database (`scan/…`, `compile/…`, `resolve/…`) |
 | `topic_category` | `idsrc`, `idtopic`, `category` | N:N — a topic belongs to one or more categories (`winapi/structures`) |
-| `meta` | `key`, `value` | schema version, project data |
+| `meta` | `key`, `value` | schema version (2), project data |
 
 Every row carries `idsrc`, which is what makes "replace this file" a plain
-delete. A **topic** is the whole documented thing; a **segment** is what one
-file says about it, so a class documented in three places is three segments
-of one topic, in order. `segments.pos` packs the file position (high bits)
-and the position inside the file (low 20 bits) so a topic's segments sort
-with a plain `ORDER BY pos`. `raw` is the marker text of the segment,
-verbatim and in order — never the C++ between markers; it is re-parsed by
-the same scanner when a product is generated. `resolved` and `is_resolved`
-are reserved for the a-posteriori content resolution (not built yet).
+delete. A **topic** is the whole documented thing; a **segment** is one
+marker of it, so a class documented in three places is the union of its
+markers, in order. `segments.pos` packs the file position (high bits) and the
+position inside the file (low 20 bits) so a topic's segments sort with a
+plain `ORDER BY pos`. `raw` is the marker text verbatim; `fields` is the same
+content already split, so the description of anything is one `SELECT` away
+(a short description, an index, a table by category: queries, not parsing).
+`resolved` and `is_resolved` are reserved.
 
-**Keys.** `key` is the normalized identity of the topic's family: Xbase++
-symbols (functions, classes, structures, commands and their members) in
-upper case — their canonical form in the `.xbmac` and the export table; C and
-C++ symbols as written, case-sensitive; doc-internal ids (notes, topics) in
-lower case. `ident` keeps the first spelling seen, for display. Components
-are topics too: `method LARGE_INTEGER:New64`.
+**Keys.** `key` is the normalized identity: Xbase++ symbols (functions,
+classes) in upper case — their canonical form in the `.xbmac` and the export
+table; C and C++ symbols as written, case-sensitive; doc ids (notes, topics)
+in lower case. `ident` keeps the first spelling seen, for display. A topic
+has no file and line of its own: its location is its first segment.
 
-**Categories** come from the `category:` fields; there is no categories
-table — a category exists because it is used, the list is
-`SELECT DISTINCT category FROM topic_category`, and the `/` in the path is the
-hierarchy.
+**Categories** come from the `category:` fields (comma lists allowed); there
+is no categories table — a category exists because it is used, the list is
+`SELECT DISTINCT category FROM topic_category`, and the `/` in the path is
+the hierarchy.
 
 The database is single-process by design: one connection, no concurrency;
 another process wanting the data works on its own copy. Reads are always
-materialized (`QueryAll`), never a live cursor.
+materialized (`QueryAll`), never a live cursor. A database of another schema
+version is refused: delete it and compile again.
 
-### What is generated from it
-
-Nothing yet: the reference Markdown (one file per topic), the agent lookup
-over `doc_fts` and the changelog from `since`/`deprecated` are the next
-steps, and all of them are a query plus a template over this database.
-
-## `gendoc` — the reference, one file per topic
+## `gendoc` — the reference, one file per page
 
 The first product generated from the documentation database: a flat folder
-of Markdown files, **one per topic**, plus an `index.md`. No grouping yet — a
-folder with all the content, that is the point.
+of Markdown files, **one per page**, plus an `index.md`. A page is a topic,
+or a topic group — every topic that declared the same `_tg_`, the way the
+overloads of a C++ function share one page. No other grouping: a folder with
+all the content, that is the point.
 
 ```
 ot4xb-tool [-q] gendoc -db <file.db> -out <dir>
 ```
 
-Run it on a compiled and resolved database. Files whose bytes are already
-right are not rewritten; the output is CRLF, UTF-8.
+Run it on a compiled and resolved database. The output is CRLF.
 
 ### File names: slugs
 
-Every topic gets a file name stem from its kind and normalized key —
-`function-array2ppmarshall`, `method-large_integer.new64`,
-`note-con-get-long-ex`, `cpp-function-json_ns.serialize-xppparamlist` — using
-only `a-z 0-9 _ - .`: lower-cased, `:` and `::` become `.`, anything else
-becomes `-`, runs collapse. Case is dropped on purpose (a Windows file system
-would merge `Foo.md` and `FOO.md` anyway); the topics that then collide all
-get a short hash of their exact `kind|key` appended, so the result never
-depends on order.
-
-A topic may name its own file with an **explicit slug** — `| slug: fpqcall`
-on its marker (entities, members and notes alike). It wins over the computed
-one; it is the way to give a page a stable, known name, and the only way to
-have internal links to it clear. Explicit slugs are compared
-**case-insensitively**: an invalid one (outside the alphabet) is reported and
-the computed name used; the same explicit slug on several topics is an
-authoring error — reported with `file:line`, and all of them are suffixed so
-none overwrites another.
+A page's file is its slug plus `.md`. A topic names its own with `_slug_:`
+in its header (`wapist_point`, `filetime64`); without one the tool computes
+`kind-key` — `function-ft64_setts`, `cpp-function-json_ns.serialize` — from
+the alphabet `a-z 0-9 _ - .` (lower-cased, `:` becomes `.`, anything else
+`-`). A group's file is the group's slug (the name, unless a block wrote a
+`_slug_`, which every block of the group must repeat). Two pages sharing a
+slug are reported by `resolve`; the generator still writes both, suffixing
+the later one (`-2`), so nothing overwrites anything.
 
 ### What a page holds
 
-- The title (the identity as written), the kind, its categories.
-- Per segment (a topic documented in several places has several, in
-  document order): its source `file:line`, then the content, re-parsed from
-  the stored marker text by the same scanner: syntax, description,
-  parameters, return, flags, examples, notes, and every other field as
-  `name: value` — unknown fields included, nothing is dropped.
-- For a class or structure: a **Members** list linking to each member's own
-  page (members are topics too). For a topic: its commands.
-- **References**: included notes, parents, links, see-also and calls — as
-  links when the target exists, as plain text otherwise. Included notes are
-  linked, not expanded: content resolution is a later step.
+Exactly what was written, in the order it was written. A page is the
+concatenation of the topic's segments (every marker, from every file, in
+document order); within a segment, every field in turn:
 
-`index.md` lists every topic under its kind, linking to its page.
+- a labelled field renders as `**label:** value`; a label-hidden one
+  (`desc_`) as its bare value; an entry-hidden one (`_slug_`) not at all; a
+  `|:` field as its text. Multi-line values are dedented, a value that starts
+  on its own line (`| params:` and a list below) keeps the label on its own
+  line;
+- the identity is the title (`# ident`; `## ident` for each topic of a
+  group page under `# group`);
+- `include-note-id` is replaced by the note's rendered body, right there —
+  recursively, cycles cut;
+- `{{ilink: <target> text}}` becomes `[text](page.md)` when the target
+  exists, plain text otherwise; any other `{{label: value}}` inline renders
+  as its bold label;
+- within one marker, the entries that follow a list item continue that item
+  on the same line (a hidden-label one after ` - `), so
+  `|member_: - MEMBER LONG x | desc_: x coordinate.` reads
+  `- MEMBER LONG x - x coordinate.` and consecutive members stay one list.
+
+The tool adds no section, no table and no template of its own: the
+`**BEGIN STRUCTURE**` lines, the `- MEMBER` items, the `See also:` text are
+the author's. `index.md` lists every page under its kind (and the groups),
+linking to it.

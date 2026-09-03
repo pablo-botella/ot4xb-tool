@@ -148,6 +148,11 @@ func Open(path string) (*DB, error) {
 	// the Exec would wait for the single connection forever. Collect, close,
 	// then write.
 	h.SetMaxOpenConns(1)
+	// A build artefact, rebuilt from the sources at will: speed over durability.
+	if _, err := h.Exec(`PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF;`); err != nil {
+		h.Close()
+		return nil, fmt.Errorf("docdb: pragma: %w", err)
+	}
 	if _, err := h.Exec(schema); err != nil {
 		h.Close()
 		return nil, fmt.Errorf("docdb: schema: %w", err)

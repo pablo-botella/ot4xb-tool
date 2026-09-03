@@ -6,71 +6,97 @@ mkskill:
 
 ## `scandoc` — the in-source documentation scanner
 
-ot4xb documents itself in its C/C++ sources: the line that registers a thing
+ot4xb documents itself in its sources: the line that registers a thing
 documents it, in `/*{{ … }}*/` comment markers next to the code. `scandoc`
-parses those markers into a model and reports what is wrong, without ever
-touching a source:
+parses those markers (the Draft 4 authoring model of the spec) and reports
+what is wrong, without ever touching a source:
 
 ```
-ot4xb-tool [-q] scandoc -src <file|dir> [-fields] [-tags [file]]
+ot4xb-tool [-q] scandoc -src <file|dir> [-fields] [-issues]
 ```
 
 | option | meaning |
 |---|---|
-| `-src` | one file, or a directory: its `.cpp/.c/.h/.hpp` files (not recursive), in name order |
-| `-fields` | print every field of every entity, not only the identities |
-| `-tags` | tag inventory (debug): alone it prints the vocabulary in use; with a file it writes every occurrence there, one per line |
+| `-src` | one file, or a directory: its `.cpp/.c/.h/.hpp` files, then the `.prg/.ch` of it and its subfolders (`ch/`), sorted — the same order `compile` uses |
+| `-fields` | print every field of every marker, not only the topics |
+| `-issues` | print only the issues |
 
-Output: one line per documented entity (`start-end  kind  identity`, with its
-components below), then the diagnostics as `file:line: severity: message` so
-an editor can jump to them. Sources are read as bytes (Windows-1252) and any
-line ending is accepted; a file whose lines are not all CRLF gets one warning
-(CRLF is the convention, required in Xbase++ sources).
+Output: one line per topic (`start-end  kind  identity  (compact|composed,
+N markers)`), then every issue as `file:line: severity: code: message` so an
+editor can jump to it. Exit code 1 when any file has an error. Sources are
+read as bytes (Windows-1252) and any line ending is accepted; a file whose
+lines are not all CRLF gets one warning (CRLF is the convention, required in
+Xbase++ sources).
 
-### The grammar, in short
+### The model, in short
 
-A marker is `/*{{ label: value | field: value | … }}*/`, one or more lines; a
-`|` starts a field, and a `|` inside a backtick code span is text. The first
-label names the **entity kind** and its identity:
+Everything documented is a **topic** — a page, an identity, a link target —
+of one of nine kinds:
 
 | kind | identity | world |
 |---|---|---|
 | `function`, `internal-function` | the Xbase++ name | Xbase++ (case-insensitive) |
 | `c-function`, `debug-c-function` | the C symbol | C (case-sensitive) |
-| `cpp-function` | `[ns::]name(param-types)`, one per overload | C++ (case-sensitive) |
-| `class` (label `class-name`), `structure` | the class name; a structure is a class plus its binary `gwst-member`s | Xbase++ |
+| `cpp-function` | `name(param-types)`, one topic per overload | C++ (case-sensitive) |
+| `class` (header label `class-name`) | the class name; a GWST structure is a class too | Xbase++ |
 | `cpp-class` | the C++ class | C++ |
-| `topic` | a doc-internal id; its body is free content | doc (lower-case) |
-| `command` | an id; lives inside a topic | Xbase++ |
+| `note-id` | a doc id; a note is a topic used by `include-note-id` | doc (lower-case) |
+| `topic` | a doc id; an amorphous page (a chapter, a file header, a command set) | doc (lower-case) |
 
-An entity is either **compact** (everything inline in one marker) or a
-**scope**: `/*{{begin-<kind>}}*/`, the header marker, the real code, and
-`/*{{end-<kind>}}*/`. Inside a class or structure scope the auxiliaries are
-their own markers — `method`, `ivar`, `property`, `class-method`, `class-var`,
-`class-property`, `gwst-member` — identified as `Class:member` (a method
-keeps its authored signature for display; the name before `(` is the
-identity).
+**Everything else is content** of the enclosing topic — members, methods,
+properties, commands, parameters, notes — never a topic and never a link
+target. A topic is either **compact** (one marker holds it all) or
+**composed**: `/*{{begin-<kind>}}*/`, its header marker, the real code with
+the content markers next to the lines they document, `/*{{end-<kind>}}*/`.
+Content outside a topic is an error.
 
-Fields are an open vocabulary (`syntax`, `desc`, `param x`, `return`,
-`example`, `see-also`, `category`, `since`, `deprecated`, `parent`, `ilink`,
-…): unknown names are kept and transported, never dropped. Values are
-Markdown; a ``` fence keeps its content verbatim.
+```
+/*{{begin-class}}*/
+/*{{class-name_: WAPIST_POINT
+            | _slug_: wapist_point
+            | class-function: WAPIST_POINT
+            | parent: {{ilink: <class gwst> gwst}}
+            | category: winapi/structures
+            | desc: Wrapper over the WinApi POINT structure.
+   }}*/
+/*{{|:**BEGIN STRUCTURE  POINT** }}*/
+XB_BEGIN_STRUCTURE ( POINT )
+   /*{{|member_: - MEMBER LONG x | desc_: x coordinate. }}*/
+   _XBST_LONG ( x )
+XB_END_STRUCTURE
+/*{{|:**END STRUCTURE** }}*/
+/*{{include-note-id: wapist-map}}*/
+/*{{end-class}}*/
+```
 
-**Shared notes** are written once and pulled in by id: the compact form
-`/*{{note-id: X |: body | note: caveat | include-note-id: dep}}*/`, or a
-composed block `/*{{begin-note | note-id: X}}*/` … `/*{{end-note}}*/` whose
-`/*{{note: …}}*/` fragments, scattered through the code they annotate, make
-up the body in order. An entity includes a note with a loose
-`/*{{include-note-id: X}}*/` inside its scope. `| ilink: <kind id> text` is
-an internal link to any entity by kind and identity. A
-`/*{{begin-markdown-free}}*/` … `/*{{end-markdown-free}}*/` block is raw
-content nothing inside is parsed.
+- A marker is `label: value | label: value …`, one or more lines: a field
+  starts at a `|` that begins a line or follows a blank, outside backticks,
+  followed by an optional label and `:`. A `|` inside a code span or a fenced
+  block is text. Values are Markdown, continuation lines verbatim.
+- The header's first entry is the identity (`kind: ident`). A marker that
+  starts with `|` is a **fragment** of the open topic; `|:` is text placed
+  right there. `include-note-id: X` transcludes note X at that position.
+- **Visibility** is in the label's first and last underscore: `desc_` shows
+  the value without its label, `_todo` hides the whole entry, `_slug_` is
+  hidden both ways but still a field the tool reads. Only the first and the
+  last underscore count; they are stripped before the label is recognized.
+- The only labels the tool interprets: the identity, `slug` (the page's file
+  name; computed from kind and key when absent), `tg` (topic group: every
+  topic with the same `_tg_` renders into one page — the C++ overloads),
+  `category` (comma list allowed) and `include-note-id`. Everything else
+  renders as written, in written order.
+- **Links**: `{{ilink: <kind ident> text}}`, `{{ilink: <slug name> text}}`,
+  `{{ilink: <tg name> text}}` inside any value; the kind is exact (a
+  `function` and a `c-function` of the same name are two topics). Markdown
+  links stay for external URLs.
+- **Scattered content**: a later block with the same identity — same file or
+  another — adds its content to the same topic, in parse order. It carries
+  the identity and the new content only; nothing already written is repeated.
 
 ### What it checks
 
-Grammar errors (unclosed markers, mismatched scopes, missing identities,
-duplicate identities per kind, duplicate `mangled-name`), lint (line length,
-non-ASCII, non-CRLF), migration debt (`todo` fields, retired forms), and —
-across the whole directory — that every `include-note-id` and `ilink` target
-exists, that note inclusion has no cycles, and that no non-reopenable identity
-is defined twice.
+Marker grammar (unterminated markers, unknown kinds, a head that is not a
+topic kind, stray or mismatched `begin`/`end`, a scope without a header or
+with two, content before the header or outside any topic), plus the CRLF
+warning. Cross-file checks — missing link targets, include cycles, slug
+clashes — belong to `resolve`, over the compiled database.

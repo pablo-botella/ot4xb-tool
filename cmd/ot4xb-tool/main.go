@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/pablo-botella/ot4xb-tool/modules/cbk2obj"
@@ -29,7 +28,7 @@ import (
 	"github.com/pablo-botella/ot4xb-tool/modules/docdb"
 	"github.com/pablo-botella/ot4xb-tool/modules/docgen"
 	"github.com/pablo-botella/ot4xb-tool/modules/docresolve"
-	"github.com/pablo-botella/ot4xb-tool/modules/scandoc"
+	"github.com/pablo-botella/ot4xb-tool/modules/srcdoc"
 	"github.com/pablo-botella/ot4xb-tool/modules/srcsplit"
 	"github.com/pablo-botella/ot4xb-tool/modules/vbuild"
 	"github.com/pablo-botella/ot4xb-tool/modules/vsxbt"
@@ -335,18 +334,19 @@ func runCbk2obj(args []string) error {
 // scandocUsage prints the scandoc parameter summary (all parameters are
 // named; positionals end up being a pain).
 func scandocUsage() {
-	fmt.Fprintln(os.Stderr, "usage: ot4xb-tool [-q] scandoc -src path [-fields] [-tags [file]]")
-	fmt.Fprintln(os.Stderr, "  -src path     file or directory to scan")
-	fmt.Fprintln(os.Stderr, "  -fields       print every field of every entity")
-	fmt.Fprintln(os.Stderr, "  -tags [file]  tag inventory (debug): alone it prints, with a file it writes every")
-	fmt.Fprintln(os.Stderr, "                occurrence there, one per line (ASCII + CRLF)")
+	fmt.Fprintln(os.Stderr, "usage: ot4xb-tool [-q] scandoc -src path [-fields] [-issues]")
+	fmt.Fprintln(os.Stderr, "  -src path     file or directory to scan (subfolders: .prg/.ch only)")
+	fmt.Fprintln(os.Stderr, "  -fields       print every field of every marker")
+	fmt.Fprintln(os.Stderr, "  -issues       print only the issues (nothing else)")
 }
 
+// runScandoc scans sources with the Draft 4 scanner and lists what it found:
+// one line per topic (line range, kind, identity, number of markers), the
+// fields with -fields, and every issue on stderr as file:line. It exits non
+// zero when any file has an error-severity issue.
 func runScandoc(args []string) error {
-	// Hand-parsed (like -tool/-bs): -tags takes an OPTIONAL value, which
-	// the flag package cannot express. One syntax only: -name value.
-	var path, tagsOut string
-	var fields, tags bool
+	var path string
+	var fields, issuesOnly bool
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-src":
@@ -357,12 +357,8 @@ func runScandoc(args []string) error {
 			path = args[i]
 		case "-fields":
 			fields = true
-		case "-tags":
-			tags = true
-			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
-				i++
-				tagsOut = args[i]
-			}
+		case "-issues":
+			issuesOnly = true
 		case "-h", "--help", "/?":
 			scandocUsage()
 			return nil
@@ -379,135 +375,72 @@ func runScandoc(args []string) error {
 	if err != nil {
 		return err
 	}
-	var files []*scandoc.File
+	var files []*srcdoc.File
 	if st.IsDir() {
-		files, err = scandoc.ScanDir(path)
+		paths, err := doccompile.ExpandSources([]string{path})
+		if err != nil {
+			return err
+		}
+		for _, p := range paths {
+			f, err := srcdoc.ScanFile(p)
+			if err != nil {
+				return err
+			}
+			files = append(files, f)
+		}
 	} else {
-		var f *scandoc.File
-		f, err = scandoc.Scan(path)
-		files = []*scandoc.File{f}
+		f, err := srcdoc.ScanFile(path)
+		if err != nil {
+			return err
+		}
+		files = []*srcdoc.File{f}
 	}
-	if err != nil {
-		return err
-	}
-	// tag inventory (per first word of the field name, the vocabulary key);
-	// occurrences carry every single appearance for the -tags file, which
-	// exists to analyze the tags in detail separately
-	type tagInfo struct {
-		name    string
-		count   int
-		unknown bool
-		file    string
-		line    int
-	}
-	inventory := make(map[string]*tagInfo)
-	var occurrences []string
-	nErr := 0
-	// Project-level resolution: cross-file includes, ilink targets, note cycles
-	// and duplicate identities across the whole scan (a single file is a project
-	// of one).
-	scandoc.ResolveProject(files)
+	nErr, nTopics := 0, 0
 	for _, f := range files {
-		if len(f.Entities)+len(f.Notes)+len(f.Diags) > 0 {
-			say("scandoc: %s: %d entities, %d notes\n", f.Path, len(f.Entities), len(f.Notes))
+		nTopics += len(f.Topics)
+		if !issuesOnly && len(f.Topics)+len(f.Issues) > 0 {
+			say("scandoc: %s: %d topic(s), %d issue(s)\n", f.Name, len(f.Topics), len(f.Issues))
 		}
-		for i := range f.Entities {
-			e := &f.Entities[i]
-			say("  %5d-%-5d %-12s %s\n", e.StartLine, e.EndLine, e.Kind, e.Ident)
-			for _, fd := range e.Fields {
+		if !issuesOnly {
+			for _, t := range f.Topics {
+				last := t.Markers[len(t.Markers)-1].EndLine
+				form := "composed"
+				if t.Compact {
+					form = "compact"
+				}
+				say("  %5d-%-5d %-18s %s  (%s, %d marker(s))\n", t.Line, last, t.Kind, t.Ident, form, len(t.Markers))
 				if fields {
-					say("        %5d  | %s: %s\n", fd.Line, fd.Name, fd.Value)
-				}
-				name := fd.Name
-				if i := strings.IndexAny(name, " \t"); i >= 0 {
-					name = name[:i]
-				}
-				key := strings.ToLower(name)
-				ti := inventory[key]
-				if ti == nil {
-					ti = &tagInfo{name: name, unknown: fd.Unknown, file: f.Path, line: fd.Line}
-					inventory[key] = ti
-				}
-				ti.count++
-				if tagsOut != "" {
-					status := "known"
-					if fd.Unknown {
-						status = "unknown"
-					}
-					occurrences = append(occurrences, fmt.Sprintf("%s\t%s\t%s:%d", status, name, f.Path, fd.Line))
-				}
-			}
-			for _, id := range e.NoteRefs {
-				say("        include-note-id: %s\n", id)
-			}
-			for ci := range e.Components {
-				c := &e.Components[ci]
-				// identity is Owner:Name; show the authored form when it differs.
-				if c.Ident != c.Name {
-					say("        %5d  %-16s %s:%s  (%s)\n", c.Line, c.Kind, e.Ident, c.Name, c.Ident)
-				} else {
-					say("        %5d  %-16s %s:%s\n", c.Line, c.Kind, e.Ident, c.Name)
-				}
-				if fields {
-					for _, fd := range c.Fields {
-						say("        %5d    | %s: %s\n", fd.Line, fd.Name, fd.Value)
+					for _, mk := range t.Markers {
+						for _, fd := range mk.Fields {
+							lab := fd.Label
+							if fd.HideEntry {
+								lab = "_" + lab
+							}
+							if fd.HideLabel {
+								lab += "_"
+							}
+							v := fd.Value
+							if i := strings.IndexByte(v, '\n'); i >= 0 {
+								v = v[:i] + " ..."
+							}
+							say("        %5d  | %s: %s\n", fd.Line, lab, v)
+						}
 					}
 				}
 			}
 		}
-		for i := range f.Notes {
-			n := &f.Notes[i]
-			title := n.Title
-			if title != "" {
-				title = " (" + title + ")"
-			}
-			say("  %5d-%-5d %-12s %s%s\n", n.StartLine, n.EndLine, "note", n.ID, title)
-		}
-		for _, d := range f.Diags {
-			fmt.Fprintf(os.Stderr, "%s:%d: %s: %s\n", f.Path, d.Line, d.Severity, d.Msg)
+		for _, is := range f.Issues {
+			fmt.Fprintf(os.Stderr, "%s:%d: %s: %s: %s\n", f.Name, is.Line, is.Severity, is.Code, is.Message)
 		}
 		nErr += f.Errors()
 	}
-	if tags && tagsOut == "" {
-		var known, unknown []string
-		for _, ti := range inventory {
-			if ti.unknown {
-				unknown = append(unknown, fmt.Sprintf("%s(%d, %s:%d)", ti.name, ti.count, ti.file, ti.line))
-			} else {
-				known = append(known, fmt.Sprintf("%s(%d)", ti.name, ti.count))
-			}
-		}
-		sort.Strings(known)
-		sort.Strings(unknown)
-		say("known tags:   %s\n", strings.Join(known, " "))
-		say("unknown tags: %s\n", strings.Join(unknown, " "))
-	}
-	if tagsOut != "" {
-		// unknown first, then per tag and location: the file is for
-		// analyzing the tags in detail separately
-		sort.Slice(occurrences, func(i, j int) bool {
-			ui, uj := strings.HasPrefix(occurrences[i], "unknown"), strings.HasPrefix(occurrences[j], "unknown")
-			if ui != uj {
-				return ui
-			}
-			return occurrences[i] < occurrences[j]
-		})
-		var sb strings.Builder
-		for _, o := range occurrences {
-			sb.WriteString(o + "\r\n")
-		}
-		if err := os.WriteFile(tagsOut, []byte(sb.String()), 0666); err != nil {
-			return err
-		}
-		say("scandoc: %d tag occurrence(s) -> %s\n", len(occurrences), tagsOut)
-	}
+	say("scandoc: %d file(s), %d topic(s), %d error(s)\n", len(files), nTopics, nErr)
 	if nErr > 0 {
 		return fmt.Errorf("scandoc: %d error(s)", nErr)
 	}
 	return nil
 }
 
-// srcsplitUsage prints the srcsplit parameter summary.
 func srcsplitUsage() {
 	fmt.Fprintln(os.Stderr, "usage: ot4xb-tool [-q] srcsplit -src path|glob [-code dst] [-doc dst] [-bak|-force] [-check]")
 	fmt.Fprintln(os.Stderr, "  -src path   a source file, a folder of them, or a glob mask (folder/mask)")
@@ -596,8 +529,8 @@ func runResolve(args []string) error {
 	if err != nil {
 		return err
 	}
-	say("resolve: %d reference(s): %d skipped (unqualified), %d missing target, %d include cycle(s), %d duplicate definition(s)\n",
-		rep.Refs, rep.Skipped, rep.Missing, rep.Cycles, rep.Duplicates)
+	say("resolve: %d reference(s): %d missing target, %d include cycle(s), %d duplicate slug(s)\n",
+		rep.Refs, rep.Missing, rep.Cycles, rep.DupSlugs)
 	rows, err := db.QueryAll(`SELECT s.src, i.line, i.severity, i.message FROM issues i JOIN sources s USING(idsrc)
 	                          WHERE i.code LIKE 'resolve/%' ORDER BY s.pos, i.line`)
 	if err != nil {
@@ -674,9 +607,17 @@ func runDoccheck(args []string) error {
 	if src == "" || mac == "" {
 		return fmt.Errorf("usage: ot4xb-tool [-q] doccheck -src <sourcedir> -xbmac <file.xbmac> [-full]")
 	}
-	files, err := scandoc.ScanDir(src)
+	paths, err := doccompile.ExpandSources([]string{src})
 	if err != nil {
 		return err
+	}
+	var files []*srcdoc.File
+	for _, p := range paths {
+		f, err := srcdoc.ScanFile(p)
+		if err != nil {
+			return err
+		}
+		files = append(files, f)
 	}
 	m, err := xbmac2h.ParseFile(mac)
 	if err != nil {

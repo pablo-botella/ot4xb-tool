@@ -1,5 +1,5 @@
 // Package doccheck cross-checks the in-source documentation (parsed by
-// scandoc) against the DLL's registration list (parsed by xbmac2h): every
+// srcdoc) against the DLL's registration list (parsed by xbmac2h): every
 // Xbase++ function/structure that the .xbmac registers should be documented,
 // and every documented function/structure/c-function should correspond to a
 // registration. It answers the release question "is the public surface
@@ -8,8 +8,8 @@
 // Kind mapping (verified against the real ot4xb tree):
 //   - _XPP_REG_FUN_ and _XPP_REG_WMAC -> an Xbase++ function, documented as
 //     function: or internal-function: (case-insensitive).
-//   - _XPP_REG_WST_ -> a GWST structure, documented as structure: or (the
-//     not-yet-migrated form) class-name: (case-insensitive).
+//   - _XPP_REG_WST_ -> a GWST structure, documented as a class (class-name:,
+//     case-insensitive): a structure is a class in Draft 4.
 //   - _CDECL_EXPORT_ -> a plain C export, documented as c-function:
 //     (case-SENSITIVE - a C symbol).
 package doccheck
@@ -19,7 +19,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/pablo-botella/ot4xb-tool/modules/scandoc"
+	"github.com/pablo-botella/ot4xb-tool/modules/srcdoc"
 	"github.com/pablo-botella/ot4xb-tool/modules/xbmac2h"
 )
 
@@ -55,7 +55,7 @@ func stripBlanks(s string) string {
 }
 
 // Check runs the cross-check over the scanned sources and the parsed .xbmac.
-func Check(files []*scandoc.File, mac *xbmac2h.File) Report {
+func Check(files []*srcdoc.File, mac *xbmac2h.File) Report {
 	// Documented sides, keyed for lookup; keep a display value for reporting.
 	docFun := map[string]string{}    // Xbase++ functions (function + internal-function)
 	docStruct := map[string]string{} // structures + class-name
@@ -63,21 +63,29 @@ func Check(files []*scandoc.File, mac *xbmac2h.File) Report {
 	var rep Report
 
 	for _, f := range files {
-		for i := range f.Entities {
-			e := &f.Entities[i]
-			if e.Ident == "" {
+		for _, t := range f.Topics {
+			if t.Ident == "" {
 				continue
 			}
-			where := fmt.Sprintf("%s:%d", f.Path, e.StartLine)
-			switch e.Kind {
-			case scandoc.KindFunction, scandoc.KindInternalFunction:
-				docFun[normXbase(e.Ident)] = where
+			where := fmt.Sprintf("%s:%d", f.Name, t.Line)
+			switch t.Kind {
+			case srcdoc.KindFunction, srcdoc.KindInternalFunction:
+				if _, dup := docFun[normXbase(t.Ident)]; dup {
+					continue // scattered content: one topic, several blocks
+				}
+				docFun[normXbase(t.Ident)] = where
 				rep.NDocFun++
-			case scandoc.KindStructure, scandoc.KindClass:
-				docStruct[normXbase(e.Ident)] = where
+			case srcdoc.KindClass:
+				if _, dup := docStruct[normXbase(t.Ident)]; dup {
+					continue
+				}
+				docStruct[normXbase(t.Ident)] = where
 				rep.NDocStruct++
-			case scandoc.KindCFunction:
-				docC[normC(e.Ident)] = where
+			case srcdoc.KindCFunction, srcdoc.KindDebugCFunction:
+				if _, dup := docC[normC(t.Ident)]; dup {
+					continue
+				}
+				docC[normC(t.Ident)] = where
 				rep.NDocC++
 			}
 		}
