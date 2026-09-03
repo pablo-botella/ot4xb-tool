@@ -1,72 +1,95 @@
 // Package doccompile is the ot4xb layer of the documentation database: it
-// takes the model scandoc parses out of a source file and writes it into a
-// docdb (spec 03-srcdoc-spec, "Draft 3 - the intermediate database"). This is
-// the only place that knows the ot4xb kinds, the key rule per family and how
-// each marker becomes a reference; the database core stays generic.
+// scans sources with srcdoc (Draft 4) and writes what it finds into a docdb.
 //
 // One call per source file = one compile pass: register the source (it keeps
-// its idsrc and pos across passes), delete what it contributed before, insert
-// its topics, segments, references, categories and issues. Nothing is resolved
-// here: resolution is a separate, later step.
+// its pos across passes), drop what it contributed before, insert its topics
+// again. A topic is created the first time its (kind, key) is seen and every
+// later block with the same identity - same file or another - only appends
+// segments to it, in parse order. Every marker of a topic is one segment
+// (raw text kept), its fields go to the fields table in written order, its
+// references (include-note-id, inline {{ilink: <target> text}}) to refs, its
+// categories (comma lists allowed) to topic_category. _slug_ and _tg_ are
+// applied with the rules of the spec (explicit wins, first explicit stays,
+// conflicts are issues). Resolution is a separate step (docresolve).
+//
+// Source order: the .ch headers are compiled after every C/C++ source, so the
+// annotations they add to existing topics land after the main content.
 package doccompile
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/pablo-botella/ot4xb-tool/modules/docdb"
-	"github.com/pablo-botella/ot4xb-tool/modules/scandoc"
+	"github.com/pablo-botella/ot4xb-tool/modules/srcdoc"
 )
 
-// Key normalizes an identity into the topic key of its family: Xbase++
-// symbols upper-case (their canonical form in the xbmac and the export
-// table), C/C++ symbols as written (case-sensitive), doc-internal ids
-// lower-case. Blanks never count.
-func Key(kind, ident string) string {
-	id := stripBlanks(ident)
-	switch kind {
-	case "note", "topic", "markdown-free":
-		return strings.ToLower(id)
-	case "c-function", "cpp-function", "cpp-class", "debug-c-function":
-		return id
-	default: // function, internal-function, class, structure, command, components
-		return strings.ToUpper(id)
-	}
+// Key is srcdoc.Key: the topic key of an identity.
+func Key(kind, ident string) string { return srcdoc.Key(kind, ident) }
+
+// ilinkRe matches an inline link: {{ilink: <target-kind target-ident> text}}.
+// The target is "<kind ident>", "<slug name>" or "<tg name>"; text is
+// optional.
+var ilinkRe = regexp.MustCompile(`\{\{\s*ilink\s*:\s*<\s*([A-Za-z_-]+)\s+([^>]+?)\s*>\s*([^}]*)\}\}`)
+
+// Ilink is one inline link found in a value.
+type Ilink struct {
+	Kind, Ident, Text string
 }
 
-func stripBlanks(s string) string {
+// Ilinks extracts every inline link of a value.
+func Ilinks(v string) []Ilink {
+	var out []Ilink
+	for _, m := range ilinkRe.FindAllStringSubmatch(v, -1) {
+		out = append(out, Ilink{Kind: m[1], Ident: strings.TrimSpace(m[2]), Text: strings.TrimSpace(m[3])})
+	}
+	return out
+}
+
+// ComputedSlug is the fallback slug of a topic: kind-key lower-cased, ':'
+// becomes '.', anything outside a-z 0-9 _ - . becomes '-'.
+func ComputedSlug(kind, key string) string {
+	return slugify(kind + "-" + key)
+}
+
+func slugify(s string) string {
 	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		if s[i] != ' ' && s[i] != '\t' {
-			b.WriteByte(s[i])
+	for _, c := range strings.ToLower(s) {
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '_', c == '-', c == '.':
+			b.WriteRune(c)
+		case c == ':':
+			b.WriteByte('.')
+		default:
+			b.WriteByte('-')
 		}
 	}
 	return b.String()
 }
 
-// caseSensitiveOwner reports whether components of this owner kind keep case.
-func caseSensitiveOwner(kind string) bool { return kind == "cpp-class" }
-
-// componentKey builds Owner:Name in the owner's family rule.
-func componentKey(ownerKind, owner, name string) string {
-	if caseSensitiveOwner(ownerKind) {
-		return stripBlanks(owner) + ":" + stripBlanks(name)
+// ValidSlug reports whether an explicit slug uses only a-z 0-9 _ - . (after
+// lower-casing).
+func ValidSlug(s string) bool {
+	if s == "" {
+		return false
 	}
-	return strings.ToUpper(stripBlanks(owner)) + ":" + strings.ToUpper(stripBlanks(name))
-}
-
-// construct is one segment-to-be, in file order.
-type construct struct {
-	line int
-	emit func(seq int64) error
+	for _, c := range strings.ToLower(s) {
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '_', c == '-', c == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // CompileFile writes one scanned file into the database. src is the path
-// relative to the project root (already normalized by docdb.Source).
-func CompileFile(db *docdb.DB, src string, f *scandoc.File) (idsrc int64, err error) {
+// relative to the project root (the database's source name).
+func CompileFile(db *docdb.DB, src string, f *srcdoc.File) (idsrc int64, err error) {
 	idsrc, srcPos, _, err := db.Source(src)
 	if err != nil {
 		return 0, err
@@ -74,191 +97,139 @@ func CompileFile(db *docdb.DB, src string, f *scandoc.File) (idsrc int64, err er
 	if err := db.ReplaceSource(idsrc); err != nil {
 		return 0, err
 	}
-	var cs []construct
-
-	for i := range f.Entities {
-		e := &f.Entities[i]
-		if e.Ident == "" && e.Kind != scandoc.KindMarkdownFree {
-			continue // no identity: the scanner already reported it
-		}
-		cs = append(cs, construct{e.StartLine, func(seq int64) error { return emitEntity(db, idsrc, srcPos, seq, f, e) }})
-		for ci := range e.Components {
-			c := &e.Components[ci]
-			cs = append(cs, construct{c.Line, func(seq int64) error { return emitComponent(db, idsrc, srcPos, seq, e, c) }})
+	for _, is := range f.Issues {
+		if err := db.AddIssue(idsrc, 0, int64(is.Line), is.Severity, "scan/"+is.Code, is.Message); err != nil {
+			return 0, err
 		}
 	}
-	for i := range f.Notes {
-		n := &f.Notes[i]
-		if n.ID == "" {
-			continue
+	var seq int64
+	for _, t := range f.Topics {
+		idtopic, err := db.Topic(t.Kind, t.Key, t.Ident)
+		if err != nil {
+			return 0, err
 		}
-		cs = append(cs, construct{n.StartLine, func(seq int64) error { return emitNote(db, idsrc, srcPos, seq, n) }})
-	}
-	// the parse order is the document order: number the segments by line
-	sort.SliceStable(cs, func(a, b int) bool { return cs[a].line < cs[b].line })
-	for i, c := range cs {
-		if err := c.emit(int64(i + 1)); err != nil {
-			return idsrc, fmt.Errorf("%s: %w", src, err)
+		if _, err := db.SetTopicSlug(idtopic, ComputedSlug(t.Kind, t.Key), false); err != nil {
+			return 0, err
 		}
-	}
-	for _, d := range f.Diags {
-		sev := "warning"
-		if d.Severity == scandoc.Error {
-			sev = "error"
-		}
-		if err := db.AddIssue(idsrc, 0, int64(d.Line), sev, "", d.Msg); err != nil {
-			return idsrc, err
+		for _, mk := range t.Markers {
+			seq++
+			pos := docdb.PackPos(srcPos, seq)
+			idseg, err := db.AddSegment(idtopic, idsrc, pos, int64(mk.Line), []byte(mk.Raw))
+			if err != nil {
+				return 0, err
+			}
+			for i, fd := range mk.Fields {
+				if err := db.AddField(idsrc, idseg, int64(i), fd.Label, fd.Value, fd.HideEntry, fd.HideLabel); err != nil {
+					return 0, err
+				}
+				if err := emitField(db, idsrc, idseg, idtopic, pos, t, mk, fd); err != nil {
+					return 0, err
+				}
+			}
 		}
 	}
 	return idsrc, nil
 }
 
-func emitEntity(db *docdb.DB, idsrc, srcPos, seq int64, f *scandoc.File, e *scandoc.Entity) error {
-	kind := e.Kind.String()
-	ident := e.Ident
-	if e.Kind == scandoc.KindMarkdownFree {
-		ident = fmt.Sprintf("%s#%d", filepath.Base(f.Path), e.StartLine) // a raw block has no name of its own
-	}
-	tp, err := db.Topic(kind, Key(kind, ident), ident)
-	if err != nil {
-		return err
-	}
-	seg, err := db.AddSegment(tp, idsrc, docdb.PackPos(srcPos, seq), int64(e.StartLine), rawOf(e.Raw))
-	if err != nil {
-		return err
-	}
-	ref := func(toKind, toIdent, refType string) error {
-		return db.AddReference(seg, idsrc, tp, toKind, strings.TrimSpace(toIdent), refType)
-	}
-	// loose /*{{include-note-id: X}}*/ markers (and the retired field form)
-	for _, id := range e.NoteRefs {
-		if err := ref("note", id, "include"); err != nil {
+// emitField applies the fields the tool interprets (slug, tg, category,
+// include-note-id) and records the inline links of every value.
+func emitField(db *docdb.DB, idsrc, idseg, idtopic, pos int64, t *srcdoc.Topic, mk *srcdoc.Marker, fd srcdoc.Field) error {
+	switch fd.Label {
+	case "slug":
+		if mk.Kind != srcdoc.MkHeader {
+			return db.AddIssue(idsrc, idseg, int64(fd.Line), "warning", "compile/slug-in-fragment", "slug only counts in the topic header; ignored")
+		}
+		slug := strings.ToLower(strings.TrimSpace(fd.Value))
+		if !ValidSlug(slug) {
+			return db.AddIssue(idsrc, idseg, int64(fd.Line), "error", "compile/bad-slug", fmt.Sprintf("slug %q: only a-z 0-9 _ - . allowed", fd.Value))
+		}
+		conflict, err := db.SetTopicSlug(idtopic, slug, true)
+		if err != nil {
+			return err
+		}
+		if conflict != "" {
+			return db.AddIssue(idsrc, idseg, int64(fd.Line), "warning", "compile/slug-conflict",
+				fmt.Sprintf("%s %s already has the explicit slug %q; %q ignored (the first one stays)", t.Kind, t.Ident, conflict, slug))
+		}
+	case "tg":
+		if mk.Kind != srcdoc.MkHeader {
+			return db.AddIssue(idsrc, idseg, int64(fd.Line), "warning", "compile/tg-in-fragment", "tg only counts in the topic header; ignored")
+		}
+		name := strings.TrimSpace(fd.Value)
+		if name == "" {
+			return db.AddIssue(idsrc, idseg, int64(fd.Line), "error", "compile/bad-tg", "empty topic group name")
+		}
+		idtg, err := db.Group(name, name, idsrc, pos)
+		if err != nil {
+			return err
+		}
+		if _, err := db.SetGroupSlug(idtg, slugify(name), false); err != nil {
+			return err
+		}
+		if s := t.Field("slug"); s != nil && ValidSlug(s.Value) {
+			conflict, err := db.SetGroupSlug(idtg, strings.ToLower(strings.TrimSpace(s.Value)), true)
+			if err != nil {
+				return err
+			}
+			if conflict != "" {
+				if err := db.AddIssue(idsrc, idseg, int64(fd.Line), "warning", "compile/tg-slug-conflict",
+					fmt.Sprintf("topic group %s already has the explicit slug %q; %q ignored (all blocks of a group must agree)", name, conflict, s.Value)); err != nil {
+					return err
+				}
+			}
+		}
+		other, err := db.SetTopicGroup(idtopic, idtg)
+		if err != nil {
+			return err
+		}
+		if other != 0 {
+			return db.AddIssue(idsrc, idseg, int64(fd.Line), "warning", "compile/tg-conflict",
+				fmt.Sprintf("%s %s is already in another topic group; tg %s ignored", t.Kind, t.Ident, name))
+		}
+	case "category":
+		if mk.Kind == srcdoc.MkHeader {
+			for _, c := range srcdoc.Categories(fd.Value) {
+				if err := db.AddCategory(idsrc, idtopic, c); err != nil {
+					return err
+				}
+			}
+		}
+	case "include-note-id":
+		id := strings.TrimSpace(fd.Value)
+		if id == "" {
+			return db.AddIssue(idsrc, idseg, int64(fd.Line), "error", "compile/bad-include", "include-note-id without a note id")
+		}
+		if err := db.AddReference(idseg, idsrc, idtopic, srcdoc.KindNote, srcdoc.Key(srcdoc.KindNote, id), "include"); err != nil {
 			return err
 		}
 	}
-	if err := emitFieldRefs(e.Fields, ref); err != nil {
-		return err
-	}
-	// a command lives in a topic
-	if e.Kind == scandoc.KindCommand {
-		if v, ok := e.Field("topic"); ok && v != "" {
-			if err := ref("topic", v, "in-topic"); err != nil {
-				return err
-			}
-		}
-	}
-	for _, fd := range e.FieldAll("category") {
-		for _, c := range splitList(fd.Value) {
-			if err := db.AddCategory(idsrc, tp, c); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func emitComponent(db *docdb.DB, idsrc, srcPos, seq int64, owner *scandoc.Entity, c *scandoc.Component) error {
-	if c.Name == "" {
-		return nil
-	}
-	ownerKind := owner.Kind.String()
-	ident := owner.Ident + ":" + c.Name
-	tp, err := db.Topic(c.Kind, componentKey(ownerKind, owner.Ident, c.Name), ident)
-	if err != nil {
-		return err
-	}
-	seg, err := db.AddSegment(tp, idsrc, docdb.PackPos(srcPos, seq), int64(c.Line), rawOf(c.Raw))
-	if err != nil {
-		return err
-	}
-	ref := func(toKind, toIdent, refType string) error {
-		return db.AddReference(seg, idsrc, tp, toKind, strings.TrimSpace(toIdent), refType)
-	}
-	return emitFieldRefs(c.Fields, ref)
-}
-
-func emitNote(db *docdb.DB, idsrc, srcPos, seq int64, n *scandoc.Note) error {
-	tp, err := db.Topic("note", Key("note", n.ID), n.ID)
-	if err != nil {
-		return err
-	}
-	seg, err := db.AddSegment(tp, idsrc, docdb.PackPos(srcPos, seq), int64(n.StartLine), rawOf(n.Raw))
-	if err != nil {
-		return err
-	}
-	for _, dep := range n.Includes {
-		if err := db.AddReference(seg, idsrc, tp, "note", strings.TrimSpace(dep), "include"); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// emitFieldRefs turns the reference-bearing fields of an entity or component
-// into rows: parent (inheritance), ilink (qualified link), see-also and calls
-// (unqualified names, stored as such - not resolved for now).
-func emitFieldRefs(fields []scandoc.Field, ref func(toKind, toIdent, refType string) error) error {
-	for _, fd := range fields {
-		switch strings.ToLower(fd.Name) {
-		case "parent":
-			// parent: NAME | A, B, C (normal, non-linear) | gwst,NAME (linear)
-			v := strings.TrimSpace(fd.Value)
-			if rest, ok := cutPrefixFold(v, "gwst,"); ok {
-				if err := ref("class", rest, "gwst-parent"); err != nil {
+	for _, l := range Ilinks(fd.Value) {
+		kind, ident := l.Kind, l.Ident
+		switch kind {
+		case "slug":
+			ident = strings.ToLower(ident)
+		case "tg":
+		default:
+			if srcdoc.HeaderKind(kind) == "" || kind == "class-name" {
+				if err := db.AddIssue(idsrc, idseg, int64(fd.Line), "error", "compile/bad-ilink",
+					fmt.Sprintf("ilink target <%s %s>: %q is not a topic kind, slug or tg", kind, ident, kind)); err != nil {
 					return err
 				}
 				continue
 			}
-			for _, p := range splitList(v) {
-				if err := ref("class", p, "parent"); err != nil {
-					return err
-				}
-			}
-		case "ilink":
-			kind, id, _, ok := scandoc.ParseILink(fd.Value)
-			if !ok || kind == "" || id == "" {
-				continue // malformed: the scanner reported it
-			}
-			if err := ref(strings.ToLower(kind), id, "ilink"); err != nil {
-				return err
-			}
-		case "see-also", "calls":
-			for _, name := range splitList(fd.Value) {
-				if err := ref("", name, strings.ToLower(fd.Name)); err != nil {
-					return err
-				}
-			}
+			ident = srcdoc.Key(kind, ident)
+		}
+		if err := db.AddReference(idseg, idsrc, idtopic, kind, ident, "ilink"); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-func cutPrefixFold(s, prefix string) (string, bool) {
-	if len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix) {
-		return strings.TrimSpace(s[len(prefix):]), true
-	}
-	return s, false
-}
-
-// splitList splits a comma-separated list of names, trimming blanks and
-// dropping empties.
-func splitList(v string) []string {
-	var out []string
-	for _, p := range strings.Split(v, ",") {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-// rawOf joins the captured marker lines with CRLF - the blob is source text.
-func rawOf(lines []string) []byte { return []byte(strings.Join(lines, "\r\n")) }
-
 // Compile scans and compiles every file of paths (in the given order - that
-// order becomes the document order for new sources) into the database at
-// dbPath, registering each under its path relative to root. It returns the
-// number of files compiled.
+// order is the document order and is kept in the database), reporting each
+// one through log. root is the project directory: source names are stored
+// relative to it. It returns the number of files compiled.
 func Compile(dbPath, root string, paths []string, log func(string)) (int, error) {
 	db, err := docdb.Open(dbPath)
 	if err != nil {
@@ -277,54 +248,43 @@ func Compile(dbPath, root string, paths []string, log func(string)) (int, error)
 		}
 		rel, err := filepath.Rel(absRoot, abs)
 		if err != nil || strings.HasPrefix(rel, "..") {
-			return n, fmt.Errorf("%s is not under the project root %s", p, root)
+			return n, fmt.Errorf("%s is outside the project root %s", p, root)
 		}
-		f, err := scandoc.Scan(abs)
+		f, err := srcdoc.ScanFile(abs)
 		if err != nil {
 			return n, err
 		}
-		idsrc, err := CompileFile(db, rel, f)
-		if err != nil {
-			return n, err
+		f.Name = rel
+		if _, err := CompileFile(db, rel, f); err != nil {
+			return n, fmt.Errorf("%s: %w", rel, err)
 		}
 		n++
 		if log != nil {
-			log(fmt.Sprintf("compile: %s -> source %d: %d entities, %d notes, %d issues",
-				filepath.ToSlash(rel), idsrc, len(f.Entities), len(f.Notes), len(f.Diags)))
+			log(fmt.Sprintf("%s: %d topic(s), %d issue(s)", rel, len(f.Topics), len(f.Issues)))
 		}
 	}
-	if pruned, err := db.PruneOrphanTopics(); err != nil {
+	if _, err := db.PruneOrphanTopics(); err != nil {
 		return n, err
-	} else if pruned > 0 && log != nil {
-		log(fmt.Sprintf("compile: %d orphan topic(s) pruned", pruned))
+	}
+	if _, err := db.PruneOrphanGroups(); err != nil {
+		return n, err
 	}
 	return n, nil
 }
 
 // ExpandSources turns -src arguments (files, globs, or directories - a
-// directory means its C/C++ sources, like scandoc) into the ordered list of
-// files to compile. Within one argument the files are sorted by name so the
-// order is reproducible; the arguments themselves keep the order given.
+// directory means its documented sources: .cpp .c .h .hpp .prg .ch, the
+// subdirectory ch/ included) into the ordered list of files to compile:
+// C/C++ sources first, .ch headers last, each group sorted by path.
 func ExpandSources(args []string) ([]string, error) {
 	var out []string
 	for _, a := range args {
 		st, err := os.Stat(a)
 		if err == nil && st.IsDir() {
-			entries, err := os.ReadDir(a)
+			names, err := dirSources(a)
 			if err != nil {
 				return nil, err
 			}
-			var names []string
-			for _, e := range entries {
-				if e.IsDir() {
-					continue
-				}
-				switch strings.ToLower(filepath.Ext(e.Name())) {
-				case ".cpp", ".c", ".h", ".hpp":
-					names = append(names, filepath.Join(a, e.Name()))
-				}
-			}
-			sort.Strings(names)
 			out = append(out, names...)
 			continue
 		}
@@ -335,8 +295,39 @@ func ExpandSources(args []string) ([]string, error) {
 		if len(matches) == 0 {
 			return nil, fmt.Errorf("no source matches %q", a)
 		}
-		sort.Strings(matches)
 		out = append(out, matches...)
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		ci, cj := isCh(out[i]), isCh(out[j])
+		if ci != cj {
+			return !ci
+		}
+		return out[i] < out[j]
+	})
 	return out, nil
+}
+
+func isCh(p string) bool { return strings.EqualFold(filepath.Ext(p), ".ch") }
+
+func dirSources(dir string) ([]string, error) {
+	var names []string
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		top := filepath.Dir(p) == filepath.Clean(dir)
+		switch strings.ToLower(filepath.Ext(p)) {
+		case ".cpp", ".c", ".h", ".hpp":
+			if top { // C sources only at the top level: subfolders hold other things
+				names = append(names, p)
+			}
+		case ".prg", ".ch": // Xbase++ sources may live in a subfolder (ch/)
+			names = append(names, p)
+		}
+		return nil
+	})
+	return names, err
 }
