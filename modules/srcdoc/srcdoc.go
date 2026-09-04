@@ -288,9 +288,11 @@ func splitFields(text string, firstLine int) (head string, fields []Field) {
 		if c == '\n' {
 			line++
 		}
-		if c == '{' && strings.HasPrefix(text[i:], "{{begin-md}}") {
+		if c == '{' && (strings.HasPrefix(text[i:], "{{begin-md}}") || strings.HasPrefix(text[i:], "{{begin-md:")) {
 			md = true
-			i += len("{{begin-md}}") - 1
+			if e := strings.Index(text[i:], "}}"); e >= 0 {
+				i += e + 1
+			}
 			continue
 		}
 		if c == '{' && strings.HasPrefix(text[i:], "{{end-md}}") {

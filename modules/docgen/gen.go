@@ -291,7 +291,9 @@ func (m *model) transclude(noteID string, stack []int64) string {
 }
 
 func (m *model) renderField(f field) string {
-	v := f.value
+	// md regions first, on the text as written: the outer dedent must not
+	// touch them (raw keeps its bytes) and their own dedent is per region
+	v, restore := m.mdRegions(f.value)
 	if strings.HasPrefix(v, "\n") {
 		// the value starts on its own line: every line, the first included,
 		// shares the indentation to strip
@@ -300,7 +302,7 @@ func (m *model) renderField(f field) string {
 	} else {
 		v = srcdoc.Dedent(v)
 	}
-	v = m.inline(v)
+	v = restore(m.inlineText(v))
 	if f.label == "" || f.hideLabel {
 		return v
 	}
@@ -336,9 +338,71 @@ func joinMarker(entries []string, hidden []bool) []string {
 // inline replaces the inline markers of a value: ilinks become Markdown links,
 // any other {{label: value}} renders as its bold label.
 func (m *model) inline(v string) string {
-	// {{begin-md}} ... {{end-md}} only fence the field splitter: the marks
-	// themselves are not content.
-	v = strings.ReplaceAll(strings.ReplaceAll(v, "{{begin-md}}", ""), "{{end-md}}", "")
+	v, restore := m.mdRegions(v)
+	return restore(m.inlineText(v))
+}
+
+// mdRe matches an inline {{begin-md[: attrs]}} ... {{end-md}} region.
+var mdRe = regexp.MustCompile(`(?s)\{\{begin-md(?::([^}]*))?\}\}(.*?)\{\{end-md\}\}`)
+
+// mdRegion renders one md region (a mdRe match): the marks disappear; with
+// "raw" the text is kept byte for byte, otherwise the lines lose their common
+// indentation and ilinks / inline markers are replaced. Attributes are a
+// comma list after the colon: {{begin-md: raw}}.
+func (m *model) mdRegion(s string) string {
+	g := mdRe.FindStringSubmatch(s)
+	raw := false
+	for _, a := range strings.Split(g[1], ",") {
+		if strings.TrimSpace(a) == "raw" {
+			raw = true
+		}
+	}
+	body := g[2]
+	if raw {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	common := -1
+	for _, l := range lines {
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		n := len(l) - len(strings.TrimLeft(l, " \t"))
+		if common < 0 || n < common {
+			common = n
+		}
+	}
+	if common > 0 {
+		for i, l := range lines {
+			if strings.TrimSpace(l) == "" {
+				lines[i] = ""
+				continue
+			}
+			lines[i] = l[common:]
+		}
+	}
+	return m.inlineText(strings.Join(lines, "\n"))
+}
+
+// mdRegions cuts the md regions out of a value before the rest is dedented
+// and rendered, and puts their rendering back afterwards.
+func (m *model) mdRegions(v string) (out string, restore func(string) string) {
+	var rendered []string
+	out = mdRe.ReplaceAllStringFunc(v, func(s string) string {
+		rendered = append(rendered, m.mdRegion(s))
+		return fmt.Sprintf("\x00%d\x00", len(rendered)-1)
+	})
+	return out, func(s string) string {
+		for i, r := range rendered {
+			s = strings.Replace(s, fmt.Sprintf("\x00%d\x00", i), r, 1)
+		}
+		return s
+	}
+}
+
+// inlineText replaces the inline markers of a value: ilinks become Markdown
+// links, any other {{label: value}} renders as its bold label.
+func (m *model) inlineText(v string) string {
 	v = ilinkRe.ReplaceAllStringFunc(v, func(s string) string {
 		g := ilinkRe.FindStringSubmatch(s)
 		kind, ident, text := g[1], strings.TrimSpace(g[2]), strings.TrimSpace(g[3])
