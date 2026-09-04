@@ -44,7 +44,25 @@ keys, in this fixed order:
 | `xbmac2h` | `xbmac2h` on the given `.xbmac` |
 | `def2lib20` | `def2lib20` on the given `.def` |
 | `artefacts` | the artefacts module (release file layout) |
+| `srcsplit` | `srcsplit` over `in` (file, glob or directory): the code projection to `code` and/or the doc projection to `doc` (`*` = the source base name); `force` overwrites, `bak` keeps a `.bak` |
+| `docs` | the documentation: `src` (a path or a list) compiled into `db` under `root` (default: the tool dir), resolved, rendered into `out`; `clean` (default true) rebuilds the database from scratch; broken references are warnings, `strict` makes them an error |
 | *(composite)* | `cleanup.before` (delete files), then `xbmac2h`, then `copy` |
+
+The documentation is built when and how the JSON says. An entry of its own,
+run by hand or from a build event:
+
+```json
+"docs": {
+  "folders": { "src": "./source", "out": "./out" },
+  "steps": [ "docs" ],
+  "docs": { "root": ".", "src": "<src>", "db": "<out>/ot4xb.db", "out": "<out>/md", "clean": true }
+},
+"include": {
+  "folders": { "src": "./source", "out": "./out/include" },
+  "steps": [ "srcsplit" ],
+  "srcsplit": { "in": "<src>/ch", "code": "<out>/*.ch", "force": true }
+}
+```
 
 ### Macros in values
 

@@ -213,8 +213,10 @@ func Extract(src []byte) []byte {
 // becomes the source's base name (no extension); a pattern without '*' is
 // returned as is.
 func expandDst(pattern, srcPath string) string {
-	base := filepath.Base(srcPath)
-	base = strings.TrimSuffix(base, filepath.Ext(base))
+	name := filepath.Base(srcPath)
+	base := strings.TrimSuffix(name, filepath.Ext(name))
+	// "*.*" keeps the source's own extension (mixed sources into one folder)
+	pattern = strings.ReplaceAll(pattern, "*.*", name)
 	return filepath.Clean(strings.ReplaceAll(pattern, "*", base))
 }
 
@@ -239,6 +241,11 @@ func writeOut(dst string, gen []byte, o Options) (diff, wrote, backed bool, err 
 	}
 	if same {
 		return false, false, false, nil // idempotent: nothing to write
+	}
+	if !exists {
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return true, false, false, err
+		}
 	}
 	if exists {
 		switch {
@@ -341,7 +348,11 @@ func globDir(dir string) ([]string, error) {
 	}
 	var out []string
 	for _, e := range entries {
-		if !e.IsDir() && strings.EqualFold(filepath.Ext(e.Name()), ".chsrc") {
+		if e.IsDir() {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(e.Name())) {
+		case ".ch", ".prg", ".chsrc", ".c", ".cpp", ".h", ".hpp": // the authoring sources
 			out = append(out, filepath.Join(dir, e.Name()))
 		}
 	}

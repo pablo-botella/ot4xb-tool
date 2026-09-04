@@ -27,6 +27,10 @@ func (t *Tool) runStep(e *entry, name string, cfg json.RawMessage, o Options) er
 		return t.stepDef2lib20(e, cfg, o)
 	case "artefacts":
 		return t.stepArtefacts(e, cfg, o)
+	case "srcsplit":
+		return t.stepSrcsplit(e, cfg, o)
+	case "docs":
+		return t.stepDocs(e, cfg, o)
 	}
 	// composite step: recognised keys in a fixed order
 	var m map[string]json.RawMessage

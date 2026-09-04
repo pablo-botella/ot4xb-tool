@@ -196,3 +196,12 @@ func TestEncodingDirective(t *testing.T) {
 		t.Fatalf("extract kept the encoding marker: %q", ex)
 	}
 }
+
+func TestExpandDstFullName(t *testing.T) {
+	if got := expandDst(filepath.Join("out", "clean", "*.*"), filepath.Join("src", "a.hpp")); got != filepath.Join("out", "clean", "a.hpp") {
+		t.Fatalf("*.* -> %q", got)
+	}
+	if got := expandDst(filepath.Join("out", "*.ch"), filepath.Join("src", "x.chsrc")); got != filepath.Join("out", "x.ch") {
+		t.Fatalf("* -> %q", got)
+	}
+}

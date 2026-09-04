@@ -6,19 +6,20 @@ mkskill:
 
 ## `srcsplit` — the two projections of an authoring source
 
-Some files cannot carry their own `/*{{ }}*/` documentation as shipped: an
-Xbase++ header (`.ch`) must stay lean and Windows-1252, for one. So the file
-is **authored** with the doc blocks in place, and `srcsplit` produces its two
-projections — the *clean* one (the source with every doc block removed) and
-the *doc* one (only the doc blocks, verbatim, in order):
+The sources are **authored** with their `/*{{ }}*/` documentation in place —
+the Xbase++ headers (`.ch`) included — and what ships is a projection of
+them: `srcsplit` produces the *clean* one (the source with every doc block
+removed: the `.ch` a release installs, the sources a release zips — the
+documented ones are always in the repository) and the *doc* one (only the
+doc blocks, verbatim, in order):
 
 ```
-ot4xb-tool [-q] srcsplit -src <file|glob> [-code <dst>] [-doc <dst>] [-bak | -force] [-check]
+ot4xb-tool [-q] srcsplit -src <file|glob|dir> [-code <dst>] [-doc <dst>] [-bak | -force] [-check]
 ```
 
 | option | meaning |
 |---|---|
-| `-src` | one source, or a glob (`ch/src/*.chsrc`) |
+| `-src` | one source, a glob (`ch/*.ch`), or a directory: its `.ch .prg .chsrc .c .cpp .h .hpp` |
 | `-code <dst>` | write the clean projection to `dst` |
 | `-doc <dst>` | write the doc projection to `dst` |
 | `-bak` | an existing, different destination is copied to `<dst>.bak` before being overwritten |
@@ -28,10 +29,12 @@ ot4xb-tool [-q] srcsplit -src <file|glob> [-code <dst>] [-doc <dst>] [-bak | -fo
 Give one or both: **a projection whose destination is not named is not
 produced** — `-code` alone just yields clean sources, nothing else is written.
 Extensions are not implied: you name every destination. A destination may
-carry a `*`, replaced by the source's base name (`-src ch/src/*.chsrc -code
-ch/*.ch -doc ch/doc/*.chdoc` turns `ot4xb.chsrc` into `ch/ot4xb.ch` and
-`ch/doc/ot4xb.chdoc`); a destination without `*` is a single file, which is
-only allowed when `-src` matches a single source.
+carry a `*`, replaced by the source's base name (`-src ch/*.ch -code
+out/include/*.ch` turns `ch/ot4xb.ch` into `out/include/ot4xb.ch`), or
+`*.*`, replaced by the full file name — the way to send sources of mixed
+extensions into one folder (`-src source -code out/clean/*.*`); a
+destination without `*` is a single file, which is only allowed when `-src`
+matches a single source. Missing destination folders are created.
 
 ### Overwriting
 
