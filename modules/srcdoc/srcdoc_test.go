@@ -166,35 +166,24 @@ func TestCanonLabel(t *testing.T) {
 	}
 }
 
-func TestMdBlock(t *testing.T) {
+func TestMdInline(t *testing.T) {
 	src := "/*{{begin-topic}}*/\r\n" +
 		"/*{{topic_: t }}*/\r\n" +
-		"/*{{begin-md}}*/\r\n" +
-		"## A heading | not: a field\r\n" +
-		"\r\n" +
-		"| a | b |\r\n" +
+		"/*{{|desc: Flags {{begin-md}}\r\n" +
+		"| flag | meaning |\r\n" +
 		"|---|---|\r\n" +
-		"| {{ilink: <class X> X}} | 2 |\r\n" +
-		"/*{{end-md}}*/\r\n" +
-		"/*{{end-topic}}*/\r\n" +
-		"/*{{begin-md}}*/\r\n" +
-		"loose\r\n"
+		"| {{ilink: <class X> X}} | copy | not: a field |\r\n" +
+		"{{end-md}} | note: after }}*/\r\n" +
+		"/*{{end-topic}}*/\r\n"
 	f := Scan("d.cpp", []byte(src))
-	if len(f.Topics) != 1 || len(f.Topics[0].Markers) != 2 {
+	if f.Errors() != 0 || len(f.Topics) != 1 {
 		t.Fatalf("topics: %+v issues %+v", f.Topics, f.Issues)
 	}
 	m := f.Topics[0].Markers[1]
-	if m.Kind != MkFragment || len(m.Fields) != 1 || m.Fields[0].Label != "" || m.Line != 3 || m.EndLine != 9 {
-		t.Fatalf("md fragment: %+v", m)
+	if len(m.Fields) != 2 || m.Fields[0].Label != "desc" || m.Fields[1].Label != "note" || m.Fields[1].Value != "after" {
+		t.Fatalf("fields: %+v", m.Fields)
 	}
-	if want := "\n## A heading | not: a field\n\n| a | b |\n|---|---|\n| {{ilink: <class X> X}} | 2 |"; m.Fields[0].Value != want {
-		t.Fatalf("value %q", m.Fields[0].Value)
-	}
-	codes := map[string]int{}
-	for _, is := range f.Issues {
-		codes[is.Code]++
-	}
-	if codes["unterminated-md"] != 1 || codes["content-outside-topic"] != 1 {
-		t.Fatalf("issues: %+v", f.Issues)
+	if !strings.Contains(m.Fields[0].Value, "| not: a field |") || !strings.HasSuffix(m.Fields[0].Value, "{{end-md}}") {
+		t.Fatalf("desc value %q", m.Fields[0].Value)
 	}
 }

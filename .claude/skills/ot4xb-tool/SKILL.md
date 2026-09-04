@@ -474,10 +474,10 @@ XB_END_STRUCTURE
 - The header's first entry is the identity (`kind: ident`). A marker that
   starts with `|` is a **fragment** of the open topic; `|:` is text placed
   right there. `include-note-id: X` transcludes note X at that position.
-- `/*{{begin-md}}*/` … `/*{{end-md}}*/`: the source lines between the two
-  markers are one `|:` text fragment, verbatim — headings, tables, anything
-  Markdown, pipes included; only the inline `{{ilink: …}}` are interpreted
-  inside.
+- `{{begin-md}}` … `{{end-md}}` inside any value (inline, like `{{ilink}}`):
+  between the two marks no `|` starts a field, so a Markdown table or text
+  with pipes goes through verbatim; the inline `{{ilink: …}}` still work
+  there, and the two marks themselves are not rendered.
 - **Visibility** is in the label's first and last underscore: `desc_` shows
   the value without its label, `_todo` hides the whole entry, `_slug_` is
   hidden both ways but still a field the tool reads. Only the first and the

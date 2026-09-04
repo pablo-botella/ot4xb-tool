@@ -336,6 +336,9 @@ func joinMarker(entries []string, hidden []bool) []string {
 // inline replaces the inline markers of a value: ilinks become Markdown links,
 // any other {{label: value}} renders as its bold label.
 func (m *model) inline(v string) string {
+	// {{begin-md}} ... {{end-md}} only fence the field splitter: the marks
+	// themselves are not content.
+	v = strings.ReplaceAll(strings.ReplaceAll(v, "{{begin-md}}", ""), "{{end-md}}", "")
 	v = ilinkRe.ReplaceAllStringFunc(v, func(s string) string {
 		g := ilinkRe.FindStringSubmatch(s)
 		kind, ident, text := g[1], strings.TrimSpace(g[2]), strings.TrimSpace(g[3])
