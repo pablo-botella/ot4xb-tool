@@ -377,7 +377,7 @@ func runScandoc(args []string) error {
 	}
 	var files []*srcdoc.File
 	if st.IsDir() {
-		paths, err := doccompile.ExpandSources([]string{path})
+		paths, err := doccompile.ExpandSources([]string{path}, nil)
 		if err != nil {
 			return err
 		}
@@ -488,7 +488,7 @@ func runCompile(args []string) error {
 	if root == "" || dbPath == "" || len(srcs) == 0 {
 		return fmt.Errorf("usage: ot4xb-tool [-q] compile -root <projectdir> -db <file.db> -src <path|glob|dir> [-src ...]")
 	}
-	files, err := doccompile.ExpandSources(srcs)
+	files, err := doccompile.ExpandSources(srcs, func(m string) { fmt.Fprintln(os.Stderr, "warning:", m) })
 	if err != nil {
 		return err
 	}
@@ -607,7 +607,7 @@ func runDoccheck(args []string) error {
 	if src == "" || mac == "" {
 		return fmt.Errorf("usage: ot4xb-tool [-q] doccheck -src <sourcedir> -xbmac <file.xbmac> [-full]")
 	}
-	paths, err := doccompile.ExpandSources([]string{src})
+	paths, err := doccompile.ExpandSources([]string{src}, nil)
 	if err != nil {
 		return err
 	}

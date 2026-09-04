@@ -45,7 +45,7 @@ keys, in this fixed order:
 | `def2lib20` | `def2lib20` on the given `.def` |
 | `artefacts` | the artefacts module (release file layout); a content item with `"clean_doc_comments": true` packs the clean projection of every source carrying `/*{{ }}*/` blocks (what `srcsplit -code` would write), so a release zip ships sources without the documentation |
 | `srcsplit` | `srcsplit` over `in` (file, glob or directory): the code projection to `code` and/or the doc projection to `doc` (`*` = the source base name); `force` overwrites, `bak` keeps a `.bak` |
-| `docs` | the documentation: `src` (a path or a list) compiled into `db` under `root` (default: the tool dir), resolved, rendered into `out`; `clean` (default true) rebuilds the database from scratch; broken references are warnings, `strict` makes them an error |
+| `docs` | the documentation: `src` (a pattern or an ordered list of patterns - the list order is the document order, a file matched twice counts once, `*.*` is every file of a folder, a pattern matching nothing warns) compiled into `db` under `root` (default: the tool dir), resolved, rendered into `out`; `clean` (default true) removes the database and the output folder first; broken references are warnings, `strict` makes them an error |
 | *(composite)* | `cleanup.before` (delete files), then `xbmac2h`, then `copy` |
 
 The documentation is built when and how the JSON says. An entry of its own,
@@ -55,12 +55,12 @@ run by hand or from a build event:
 "docs": {
   "folders": { "src": "./source", "out": "./out" },
   "steps": [ "docs" ],
-  "docs": { "root": ".", "src": "<src>", "db": "<out>/ot4xb.db", "out": "<out>/md", "clean": true }
-},
-"include": {
-  "folders": { "src": "./source", "out": "./out/include" },
-  "steps": [ "srcsplit" ],
-  "srcsplit": { "in": "<src>/ch", "code": "<out>/*.ch", "force": true }
+  "docs": {
+    "root": ".",
+    "src": [ "<src>/moredoc/pre/*.*", "<src>/ot4xb.cpp", "<src>/*.cpp", "<src>/*.h",
+             "<src>/ch/ot4xb.ch", "<src>/ch/*.*", "<src>/moredoc/post/*.*" ],
+    "db": "<out>/ot4xb.db", "out": "<out>/md", "clean": true
+  }
 }
 ```
 

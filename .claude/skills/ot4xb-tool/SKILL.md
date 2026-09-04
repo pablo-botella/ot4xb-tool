@@ -97,7 +97,7 @@ keys, in this fixed order:
 | `def2lib20` | `def2lib20` on the given `.def` |
 | `artefacts` | the artefacts module (release file layout); a content item with `"clean_doc_comments": true` packs the clean projection of every source carrying `/*{{ }}*/` blocks (what `srcsplit -code` would write), so a release zip ships sources without the documentation |
 | `srcsplit` | `srcsplit` over `in` (file, glob or directory): the code projection to `code` and/or the doc projection to `doc` (`*` = the source base name); `force` overwrites, `bak` keeps a `.bak` |
-| `docs` | the documentation: `src` (a path or a list) compiled into `db` under `root` (default: the tool dir), resolved, rendered into `out`; `clean` (default true) rebuilds the database from scratch; broken references are warnings, `strict` makes them an error |
+| `docs` | the documentation: `src` (a pattern or an ordered list of patterns - the list order is the document order, a file matched twice counts once, `*.*` is every file of a folder, a pattern matching nothing warns) compiled into `db` under `root` (default: the tool dir), resolved, rendered into `out`; `clean` (default true) removes the database and the output folder first; broken references are warnings, `strict` makes them an error |
 | *(composite)* | `cleanup.before` (delete files), then `xbmac2h`, then `copy` |
 
 The documentation is built when and how the JSON says. An entry of its own,
@@ -107,12 +107,12 @@ run by hand or from a build event:
 "docs": {
   "folders": { "src": "./source", "out": "./out" },
   "steps": [ "docs" ],
-  "docs": { "root": ".", "src": "<src>", "db": "<out>/ot4xb.db", "out": "<out>/md", "clean": true }
-},
-"include": {
-  "folders": { "src": "./source", "out": "./out/include" },
-  "steps": [ "srcsplit" ],
-  "srcsplit": { "in": "<src>/ch", "code": "<out>/*.ch", "force": true }
+  "docs": {
+    "root": ".",
+    "src": [ "<src>/moredoc/pre/*.*", "<src>/ot4xb.cpp", "<src>/*.cpp", "<src>/*.h",
+             "<src>/ch/ot4xb.ch", "<src>/ch/*.*", "<src>/moredoc/post/*.*" ],
+    "db": "<out>/ot4xb.db", "out": "<out>/md", "clean": true
+  }
 }
 ```
 
@@ -433,7 +433,7 @@ ot4xb-tool [-q] scandoc -src <file|dir> [-fields] [-issues]
 
 | option | meaning |
 |---|---|
-| `-src` | one file, or a directory: its `.cpp/.c/.h/.hpp` files, then the `.prg/.ch` of it and its subfolders (`ch/`), sorted — the same order `compile` uses |
+| `-src` | one file, or a directory: its `.cpp/.c/.h/.hpp` files, then the `.prg/.ch` of it and its subfolders (`ch/`), sorted |
 | `-fields` | print every field of every marker, not only the topics |
 | `-issues` | print only the issues |
 
@@ -624,14 +624,16 @@ ot4xb-tool [-q] resolve -db <file.db>
 
 ### `compile` — one pass per source
 
-Every `-src` (a file, a glob, or a directory: its C/C++ sources, then the
-`.prg/.ch` of it and its subfolders) is scanned with the Draft 4 scanner and
-written into the database under its path relative to `-root`
-(`source/TBinFile.cpp`; `\` becomes `/`; case-insensitive; alphabet `a-z 0-9
-- . _ /`). C/C++ sources go first and the `.ch` headers last, so the
-annotations a header adds to an existing topic land after its main content;
-within that, the order of the arguments is the parse order, and **the parse
-order is the document order**.
+Every `-src` (a file, a glob - `*.*` is every file of a folder - or a
+directory: its C/C++ sources, then the `.prg/.ch` of it and its subfolders)
+is scanned with the Draft 4 scanner and written into the database under its
+path relative to `-root` (`source/TBinFile.cpp`; `\` becomes `/`;
+case-insensitive; alphabet `a-z 0-9 - . _ /`). The order of the arguments is
+the parse order, and **the parse order is the document order**: nothing is
+re-sorted across arguments, a file matched by an earlier argument is
+discarded when a later one matches it again, and a pattern matching nothing
+only warns. Put the C/C++ sources before the `.ch` headers, so the
+annotations a header adds to an existing topic land after its main content.
 
 Compilation is **multi-pass and append-only per source**: a pass registers
 its file, deletes everything that file contributed before, and inserts it

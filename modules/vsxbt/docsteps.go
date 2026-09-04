@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/pablo-botella/ot4xb-tool/modules/doccompile"
 	"github.com/pablo-botella/ot4xb-tool/modules/docdb"
@@ -81,12 +82,13 @@ func (t *Tool) srcsplitJob(e *entry, cfg json.RawMessage, o Options) error {
 	return nil
 }
 
-// stepDocs builds the documentation: "src" (one path or a list: files, globs
-// or directories, relative to the tool file) compiled into "db" under "root"
-// (default: the tool dir), then resolved, then rendered into "out". With
-// "clean" (default true) the database is rebuilt from scratch, so sources
-// that no longer exist leave nothing behind. Broken references are reported
-// as warnings; "strict" turns them into an error.
+// stepDocs builds the documentation: "src" (one pattern or an ordered list
+// of patterns, relative to the tool file; the list order is the document
+// order, a file matched twice counts once, an empty pattern only warns)
+// compiled into "db" under "root" (default: the tool dir), then resolved,
+// then rendered into "out". With "clean" (default true) the database and the
+// output folder are removed first, so nothing stale survives. Broken
+// references are reported as warnings; "strict" turns them into an error.
 func (t *Tool) stepDocs(e *entry, cfg json.RawMessage, o Options) error {
 	var c struct {
 		Root   string          `json:"root"`
@@ -133,8 +135,14 @@ func (t *Tool) stepDocs(e *entry, cfg json.RawMessage, o Options) error {
 		if err := os.Remove(db); err != nil && !os.IsNotExist(err) {
 			return err
 		}
+		if err := os.RemoveAll(out); err != nil {
+			return err
+		}
 	}
-	files, err := doccompile.ExpandSources(srcs)
+	if err := os.MkdirAll(filepath.Dir(db), 0o755); err != nil {
+		return err
+	}
+	files, err := doccompile.ExpandSources(srcs, func(m string) { o.Warn("docs: " + m) })
 	if err != nil {
 		return err
 	}

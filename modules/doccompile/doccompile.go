@@ -283,12 +283,28 @@ func Compile(dbPath, root string, paths []string, log func(string)) (int, error)
 	return n, nil
 }
 
-// ExpandSources turns -src arguments (files, globs, or directories - a
-// directory means its documented sources: .cpp .c .h .hpp .prg .ch, the
-// subdirectory ch/ included) into the ordered list of files to compile:
-// C/C++ sources first, .ch headers last, each group sorted by path.
-func ExpandSources(args []string) ([]string, error) {
+// ExpandSources turns source arguments into the ordered list of files to
+// compile. Each argument is a file, a glob (wildcards in the last element,
+// "*.*" = every file of the folder) or a directory (its documented sources:
+// .cpp .c .h .hpp at the top level, .prg .ch anywhere below, C first and .ch
+// last - the CLI convenience). The order of the arguments is the document
+// order: nothing is re-sorted across them, and a file already taken by an
+// earlier argument is discarded. A pattern matching nothing is reported
+// through warn (when nil, it is an error).
+func ExpandSources(args []string, warn func(string)) ([]string, error) {
 	var out []string
+	seen := map[string]bool{}
+	add := func(p string) {
+		key := strings.ToLower(filepath.Clean(p))
+		if abs, err := filepath.Abs(p); err == nil {
+			key = strings.ToLower(abs)
+		}
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, p)
+	}
 	for _, a := range args {
 		st, err := os.Stat(a)
 		if err == nil && st.IsDir() {
@@ -296,25 +312,35 @@ func ExpandSources(args []string) ([]string, error) {
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, names...)
+			for _, n := range names {
+				add(n)
+			}
 			continue
 		}
 		matches, err := filepath.Glob(a)
 		if err != nil {
 			return nil, err
 		}
-		if len(matches) == 0 {
-			return nil, fmt.Errorf("no source matches %q", a)
+		var files []string
+		for _, m := range matches {
+			if st, err := os.Stat(m); err == nil && !st.IsDir() {
+				files = append(files, m)
+			}
 		}
-		out = append(out, matches...)
+		if len(files) == 0 {
+			if warn == nil {
+				return nil, fmt.Errorf("no source matches %q", a)
+			}
+			warn(fmt.Sprintf("no source matches %q", a))
+			continue
+		}
+		sort.SliceStable(files, func(i, j int) bool {
+			return strings.ToLower(files[i]) < strings.ToLower(files[j])
+		})
+		for _, f := range files {
+			add(f)
+		}
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		ci, cj := isCh(out[i]), isCh(out[j])
-		if ci != cj {
-			return !ci
-		}
-		return out[i] < out[j]
-	})
 	return out, nil
 }
 
@@ -339,6 +365,13 @@ func dirSources(dir string) ([]string, error) {
 			names = append(names, p)
 		}
 		return nil
+	})
+	sort.SliceStable(names, func(i, j int) bool {
+		ci, cj := isCh(names[i]), isCh(names[j])
+		if ci != cj {
+			return !ci
+		}
+		return names[i] < names[j]
 	})
 	return names, err
 }

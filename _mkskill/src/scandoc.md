@@ -17,7 +17,7 @@ ot4xb-tool [-q] scandoc -src <file|dir> [-fields] [-issues]
 
 | option | meaning |
 |---|---|
-| `-src` | one file, or a directory: its `.cpp/.c/.h/.hpp` files, then the `.prg/.ch` of it and its subfolders (`ch/`), sorted — the same order `compile` uses |
+| `-src` | one file, or a directory: its `.cpp/.c/.h/.hpp` files, then the `.prg/.ch` of it and its subfolders (`ch/`), sorted |
 | `-fields` | print every field of every marker, not only the topics |
 | `-issues` | print only the issues |
 

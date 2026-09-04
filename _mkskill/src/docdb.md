@@ -18,14 +18,16 @@ ot4xb-tool [-q] resolve -db <file.db>
 
 ### `compile` — one pass per source
 
-Every `-src` (a file, a glob, or a directory: its C/C++ sources, then the
-`.prg/.ch` of it and its subfolders) is scanned with the Draft 4 scanner and
-written into the database under its path relative to `-root`
-(`source/TBinFile.cpp`; `\` becomes `/`; case-insensitive; alphabet `a-z 0-9
-- . _ /`). C/C++ sources go first and the `.ch` headers last, so the
-annotations a header adds to an existing topic land after its main content;
-within that, the order of the arguments is the parse order, and **the parse
-order is the document order**.
+Every `-src` (a file, a glob - `*.*` is every file of a folder - or a
+directory: its C/C++ sources, then the `.prg/.ch` of it and its subfolders)
+is scanned with the Draft 4 scanner and written into the database under its
+path relative to `-root` (`source/TBinFile.cpp`; `\` becomes `/`;
+case-insensitive; alphabet `a-z 0-9 - . _ /`). The order of the arguments is
+the parse order, and **the parse order is the document order**: nothing is
+re-sorted across arguments, a file matched by an earlier argument is
+discarded when a later one matches it again, and a pattern matching nothing
+only warns. Put the C/C++ sources before the `.ch` headers, so the
+annotations a header adds to an existing topic land after its main content.
 
 Compilation is **multi-pass and append-only per source**: a pass registers
 its file, deletes everything that file contributed before, and inserts it
