@@ -210,6 +210,29 @@ func lexMarkers(f *File, lines [][]byte) []*Marker {
 		}
 		mk := &Marker{Line: i + 1, Trailing: strings.TrimSpace(s[:p]) != ""}
 		rest := s[p+len(open):]
+		// /*{{begin-md}}*/ ... /*{{end-md}}*/: the source lines between the two
+		// markers, verbatim, are one "|:" text fragment (inline {{ilink}}s work
+		// inside; nothing else is parsed).
+		if strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(rest), close)) == "begin-md" && strings.Contains(rest, close) {
+			var body []string
+			j := i + 1
+			for ; j < len(lines); j++ {
+				if strings.Contains(string(lines[j]), open+"end-md"+close) || strings.Contains(string(lines[j]), open+" end-md "+close) {
+					break
+				}
+				body = append(body, string(lines[j]))
+			}
+			if j >= len(lines) {
+				f.issue(mk.Line, "error", "unterminated-md", "begin-md never closed with end-md")
+			}
+			mk.Kind = MkFragment
+			mk.EndLine = j + 1
+			mk.Raw = strings.Join(body, "\n")
+			mk.Fields = []Field{{Label: "", Value: "\n" + mk.Raw, Line: mk.Line + 1}}
+			out = append(out, mk)
+			i = j
+			continue
+		}
 		var body []string
 		j := i
 		for {
@@ -346,6 +369,9 @@ func canonLabel(l string) (label string, hideEntry, hideLabel bool) {
 
 // parseMarker classifies a lexed marker and fills Scope/Ident/Fields.
 func parseMarker(f *File, mk *Marker) {
+	if mk.Kind != 0 {
+		return // classified by the lexer (a begin-md block)
+	}
 	text := mk.Raw
 	t := strings.TrimSpace(text)
 	if strings.HasPrefix(t, "begin-") {
