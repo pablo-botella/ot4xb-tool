@@ -233,7 +233,7 @@ func load(db *docdb.DB) (*model, error) {
 func (m *model) renderPage(p *page) string {
 	var b strings.Builder
 	if p.kind == "group" {
-		fmt.Fprintf(&b, "# %s\n\n", p.title)
+		fmt.Fprintf(&b, "# %s\n\n", mdIdent(p.title))
 		for _, t := range p.topics {
 			b.WriteString(m.renderTopic(t, "## ", nil))
 			b.WriteString("\n")
@@ -250,7 +250,7 @@ func (m *model) renderPage(p *page) string {
 func (m *model) renderTopic(t *topic, level string, stack []int64) string {
 	var b strings.Builder
 	if level != "" {
-		fmt.Fprintf(&b, "%s%s\n\n", level, t.ident)
+		fmt.Fprintf(&b, "%s%s\n\n", level, mdIdent(t.ident))
 	}
 	var entries []string
 	for _, s := range t.segments {
@@ -343,9 +343,9 @@ func (m *model) inline(v string) string {
 			text = ident
 		}
 		if p := m.target(kind, ident); p != nil {
-			return "[" + text + "](" + p.file + ")"
+			return "[" + mdIdent(text) + "](" + p.file + ")"
 		}
-		return text
+		return mdIdent(text)
 	})
 	return inlineRe.ReplaceAllStringFunc(v, func(s string) string {
 		g := inlineRe.FindStringSubmatch(s)
@@ -407,6 +407,20 @@ func joinEntries(entries []string) string {
 	return b.String()
 }
 
+// mdIdent protects an identity used as Markdown text: a leading or trailing
+// "_" or "*" would read as emphasis (_LARGE_INTEGER_ loses its underscores),
+// so such a name goes in a code span. Text the author already marked up
+// (a code span, bold, a link, HTML) is left alone.
+func mdIdent(s string) string {
+	if s == "" || strings.HasPrefix(s, "`") || strings.HasPrefix(s, "**") || strings.HasPrefix(s, "[") || strings.HasPrefix(s, "<") {
+		return s
+	}
+	if strings.HasPrefix(s, "_") || strings.HasSuffix(s, "_") || strings.HasPrefix(s, "*") || strings.HasSuffix(s, "*") {
+		return "`" + s + "`"
+	}
+	return s
+}
+
 func isItem(s string) bool {
 	s = strings.TrimLeft(s, " ")
 	return strings.HasPrefix(s, "- ") || strings.HasPrefix(s, "* ")
@@ -430,7 +444,7 @@ func (m *model) renderIndex() string {
 		sort.Slice(ps, func(i, j int) bool { return strings.ToLower(ps[i].title) < strings.ToLower(ps[j].title) })
 		fmt.Fprintf(&b, "\n## %s (%d)\n\n", k, len(ps))
 		for _, p := range ps {
-			fmt.Fprintf(&b, "- [%s](%s)\n", p.title, p.file)
+			fmt.Fprintf(&b, "- [%s](%s)\n", mdIdent(p.title), p.file)
 		}
 	}
 	return b.String()
