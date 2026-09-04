@@ -496,8 +496,10 @@ XB_END_STRUCTURE
 
 Marker grammar (unterminated markers, unknown kinds, a head that is not a
 topic kind, stray or mismatched `begin`/`end`, a scope without a header or
-with two, content before the header or outside any topic), plus the CRLF
-warning. Cross-file checks — missing link targets, include cycles, slug
+with two, content before the header or outside any topic), plus two
+warnings: the CRLF one, and a backtick left open on a line (a code span
+does not cross a line; an odd backtick would hide every field after it, so
+a literal backtick is written as text, never as `` '`' ``). Cross-file checks — missing link targets, include cycles, slug
 clashes — belong to `resolve`, over the compiled database.
 
 ## `srcsplit` — the two projections of an authoring source

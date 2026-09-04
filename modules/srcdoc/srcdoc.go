@@ -273,7 +273,7 @@ func isLabelByte(c byte) bool {
 
 // splitFields cuts a marker body into its fields. head is the text before the
 // first field (the header "kind: ident" or empty for a fragment).
-func splitFields(text string, firstLine int) (head string, fields []Field) {
+func splitFields(text string, firstLine int) (head string, fields []Field, oddTicks []int) {
 	type cut struct {
 		start, valueAt int
 		label          string
@@ -286,6 +286,12 @@ func splitFields(text string, firstLine int) (head string, fields []Field) {
 	for i := 0; i < len(text); i++ {
 		c := text[i]
 		if c == '\n' {
+			if inTick {
+				// a code span does not cross a line here: an odd backtick on
+				// a line is reported and stops hiding the fields that follow
+				oddTicks = append(oddTicks, line)
+				inTick = false
+			}
 			line++
 		}
 		if c == '{' && (strings.HasPrefix(text[i:], "{{begin-md}}") || strings.HasPrefix(text[i:], "{{begin-md:")) {
@@ -324,8 +330,11 @@ func splitFields(text string, firstLine int) (head string, fields []Field) {
 			}
 		}
 	}
+	if inTick {
+		oddTicks = append(oddTicks, line)
+	}
 	if len(cuts) == 0 {
-		return strings.TrimSpace(text), nil
+		return strings.TrimSpace(text), nil, oddTicks
 	}
 	head = strings.TrimSpace(text[:cuts[0].start])
 	for n, ct := range cuts {
@@ -340,7 +349,13 @@ func splitFields(text string, firstLine int) (head string, fields []Field) {
 		fd.Label, fd.HideEntry, fd.HideLabel = canonLabel(ct.label)
 		fields = append(fields, fd)
 	}
-	return head, fields
+	return head, fields, oddTicks
+}
+
+func (f *File) oddTickIssues(lines []int) {
+	for _, l := range lines {
+		f.issue(l, "warning", "odd-backtick", "a backtick is not closed on this line: the fields after it would be hidden; write a literal backtick as text")
+	}
 }
 
 // canonLabel strips the visibility underscores: only the first and the last
@@ -380,11 +395,14 @@ func parseMarker(f *File, mk *Marker) {
 	body := text[lead:]
 	if strings.HasPrefix(body, "|") {
 		mk.Kind = MkFragment
-		_, mk.Fields = splitFields(body, mk.Line+strings.Count(text[:lead], "\n"))
+		var odd []int
+		_, mk.Fields, odd = splitFields(body, mk.Line+strings.Count(text[:lead], "\n"))
+		f.oddTickIssues(odd)
 		return
 	}
 	// header or include: the first entry is "label: value" without a "|"
-	head, fields := splitFields(body, mk.Line)
+	head, fields, odd := splitFields(body, mk.Line)
+	f.oddTickIssues(odd)
 	label, val := head, ""
 	if p := strings.Index(head, ":"); p >= 0 {
 		label, val = strings.TrimSpace(head[:p]), strings.TrimSpace(head[p+1:])
