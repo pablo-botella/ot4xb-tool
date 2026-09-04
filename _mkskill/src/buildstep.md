@@ -43,7 +43,7 @@ keys, in this fixed order:
 | `vbuild` | the version script named by `versioninfo` (after it, the `<v.*>` macros see the new version) |
 | `xbmac2h` | `xbmac2h` on the given `.xbmac` |
 | `def2lib20` | `def2lib20` on the given `.def` |
-| `artefacts` | the artefacts module (release file layout) |
+| `artefacts` | the artefacts module (release file layout); a content item with `"clean_doc_comments": true` packs the clean projection of every source carrying `/*{{ }}*/` blocks (what `srcsplit -code` would write), so a release zip ships sources without the documentation |
 | `srcsplit` | `srcsplit` over `in` (file, glob or directory): the code projection to `code` and/or the doc projection to `doc` (`*` = the source base name); `force` overwrites, `bak` keeps a `.bak` |
 | `docs` | the documentation: `src` (a path or a list) compiled into `db` under `root` (default: the tool dir), resolved, rendered into `out`; `clean` (default true) rebuilds the database from scratch; broken references are warnings, `strict` makes them an error |
 | *(composite)* | `cleanup.before` (delete files), then `xbmac2h`, then `copy` |

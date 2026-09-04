@@ -15,12 +15,15 @@ package artefacts
 
 import (
 	"archive/zip"
+	"bytes"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/pablo-botella/ot4xb-tool/modules/srcsplit"
 )
 
 // Content is one item of a zip artefact: the files that go into one folder
@@ -31,6 +34,9 @@ type Content struct {
 	In []string
 	// Out is the destination folder inside the zip: "/", "/include", ...
 	Out string
+	// Clean packs the clean projection of every source that carries /*{{ }}*/
+	// documentation blocks (srcsplit.Code); files without them go as they are.
+	Clean bool
 }
 
 // Options controls the packager.
@@ -98,8 +104,9 @@ func Zip(zipPath string, contents []Content, o Options) ([]string, error) {
 		warn = func(string) {}
 	}
 	type entry struct {
-		src  string
-		name string // archive name, forward slashes, no leading slash
+		src   string
+		name  string // archive name, forward slashes, no leading slash
+		clean bool
 	}
 	var entries []entry
 	seen := map[string]string{} // lower archive name -> src
@@ -125,7 +132,7 @@ func Zip(zipPath string, contents []Content, o Options) ([]string, error) {
 					continue
 				}
 				seen[key] = m
-				entries = append(entries, entry{src: m, name: name})
+				entries = append(entries, entry{src: m, name: name, clean: c.Clean})
 			}
 		}
 	}
@@ -142,7 +149,7 @@ func Zip(zipPath string, contents []Content, o Options) ([]string, error) {
 	zw := zip.NewWriter(f)
 	var names []string
 	for _, e := range entries {
-		if err := addFile(zw, e.src, e.name); err != nil {
+		if err := addFile(zw, e.src, e.name, e.clean); err != nil {
 			zw.Close()
 			f.Close()
 			os.Remove(zp)
@@ -162,10 +169,19 @@ func Zip(zipPath string, contents []Content, o Options) ([]string, error) {
 	return names, nil
 }
 
-func addFile(zw *zip.Writer, src, name string) error {
+func addFile(zw *zip.Writer, src, name string, clean bool) error {
 	fi, err := os.Stat(src)
 	if err != nil {
 		return err
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if clean && bytes.Contains(data, []byte("/*{{")) {
+		if data, _, err = srcsplit.Code(data); err != nil {
+			return err
+		}
 	}
 	hdr, err := zip.FileInfoHeader(fi)
 	if err != nil {
@@ -173,11 +189,8 @@ func addFile(zw *zip.Writer, src, name string) error {
 	}
 	hdr.Name = name
 	hdr.Method = zip.Deflate
+	hdr.UncompressedSize64 = uint64(len(data))
 	w, err := zw.CreateHeader(hdr)
-	if err != nil {
-		return err
-	}
-	data, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}

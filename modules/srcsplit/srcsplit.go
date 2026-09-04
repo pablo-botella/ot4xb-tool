@@ -181,6 +181,23 @@ func Strip(src []byte) (out []byte, docLines int) {
 	return out, docLines
 }
 
+// Code is the clean projection of a source as bytes: Strip, then the
+// transcoding its /*{{encoding: ...}}*/ directive asks for (utf-8 sources
+// come out as Windows-1252). docLines is the number of lines removed. What
+// `-code` writes and what a release artefact packs.
+func Code(src []byte) (out []byte, docLines int, err error) {
+	enc := detectEncoding(src)
+	gen, n := Strip(src)
+	switch enc {
+	case "", "1252", "windows-1252", "cp1252", "ascii":
+		return gen, n, nil
+	case "utf-8", "utf8":
+		out, err = encode1252(string(gen))
+		return out, n, err
+	}
+	return nil, 0, fmt.Errorf("unsupported encoding %q (only utf-8 or 1252)", enc)
+}
+
 // Extract returns only the /*{{ ... }}*/ doc blocks of src (the .chdoc
 // projection), in order, each block kept verbatim. Non-doc lines are dropped.
 func Extract(src []byte) []byte {
@@ -294,8 +311,8 @@ func SplitFile(srcPath string, o Options) (Result, error) {
 		return encode1252(string(gen))
 	}
 	if o.Code != "" {
-		gen, n := Strip(data)
-		if gen, err = to1252(gen); err != nil {
+		gen, n, err := Code(data)
+		if err != nil {
 			return r, fmt.Errorf("%s -> code: %w", srcPath, err)
 		}
 		r.DocLines = n

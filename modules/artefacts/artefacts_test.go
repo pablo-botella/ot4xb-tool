@@ -2,6 +2,7 @@ package artefacts
 
 import (
 	"archive/zip"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -143,5 +144,35 @@ func TestZipMissingLiteralFile(t *testing.T) {
 	}
 	if len(names) != 0 || len(warns) != 1 {
 		t.Errorf("names=%v warns=%v", names, warns)
+	}
+}
+
+func TestZipCleanDocComments(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "a.ch")
+	os.WriteFile(src, []byte("/*{{ topic: x | desc: y }}*/\r\n#define A 1\r\n/*{{begin-topic}}*/\r\n/*{{topic_: t }}*/\r\n/*{{end-topic}}*/\r\n#define B 2\r\n"), 0o644)
+	bin := filepath.Join(dir, "b.txt")
+	os.WriteFile(bin, []byte("no markers\n"), 0o644)
+	zp := filepath.Join(dir, "out.zip")
+	if _, err := Zip(zp, []Content{{In: []string{src, bin}, Out: "/", Clean: true}}, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	r, err := zip.OpenReader(zp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	got := map[string]string{}
+	for _, f := range r.File {
+		rc, _ := f.Open()
+		b, _ := io.ReadAll(rc)
+		rc.Close()
+		got[f.Name] = string(b)
+	}
+	if got["a.ch"] != "#define A 1\r\n#define B 2\r\n" {
+		t.Fatalf("a.ch: %q", got["a.ch"])
+	}
+	if got["b.txt"] != "no markers\n" {
+		t.Fatalf("b.txt untouched: %q", got["b.txt"])
 	}
 }
