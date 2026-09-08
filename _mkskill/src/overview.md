@@ -19,7 +19,7 @@ ot4xb-tool [-q] <command> [options]
 1 on any error, 2 on a usage error; errors go to stderr.
 
 ```sh
-go install github.com/pablo-botella/ot4xb-tool/cmd/ot4xb-tool@latest    # the binary
+go install github.com/pablo-botella/ot4xb-tool@latest    # the binary
 ```
 
 <$$$msk.install$$$>

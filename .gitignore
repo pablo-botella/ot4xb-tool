@@ -4,8 +4,6 @@
 # Go build output: the CLI binary, left in the tree by a bare `go build`.
 /ot4xb-tool
 /ot4xb-tool.exe
-/cmd/ot4xb-tool/ot4xb-tool
-/cmd/ot4xb-tool/ot4xb-tool.exe
 
 # Go test artefacts: `go test -c` binaries and coverage profiles.
 *.test

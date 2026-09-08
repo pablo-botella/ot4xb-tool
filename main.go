@@ -15,9 +15,8 @@
 package main
 
 // The docs are composed from _mkskill/ — edit the sources there, then:
-// (-C ../..: the config lives at the module root, this file does not)
-//go:generate go run github.com/pablo-botella/mkskill/cmd/mkskill@latest -q -C ../.. build
-//go:generate go run github.com/pablo-botella/mkskill/cmd/mkskill@latest -q -C ../.. -vbuild
+//go:generate go run github.com/pablo-botella/mkskill/cmd/mkskill@latest -q build
+//go:generate go run github.com/pablo-botella/mkskill/cmd/mkskill@latest -q -vbuild
 
 import (
 	"flag"

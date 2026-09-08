@@ -1,0 +1,78 @@
+# Release: runs when a v* tag lands, and only blesses tags that sit on
+# main. The gate checks the tag against the config's own number, then
+# regenerates the docs on a clean checkout (a stale committed artifact
+# fails the diff), vets and tests. ot4xb-tool is a CLI, so the release
+# ships binaries: the whole tree is pure Go (modernc.org/sqlite, no
+# cgo), so one runner cross-compiles every target with CGO_ENABLED=0.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history: the tag-on-main check needs origin/main
+
+      - name: tag must be on main
+        run: |
+          git merge-base --is-ancestor HEAD origin/main || {
+            echo "::error::tag ${GITHUB_REF_NAME} is not on main"; exit 1; }
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: tag matches the config
+        # the config owns the release number; git only consumes it — a
+        # tag the config did not declare is refused at the door
+        run: |
+          want="$(go run github.com/pablo-botella/mkskill/cmd/mkskill@latest -q -vout version)"
+          [ "$want" = "$GITHUB_REF_NAME" ] || {
+            echo "::error::config says $want, tag is $GITHUB_REF_NAME"; exit 1; }
+
+      - name: docs are fresh
+        # regenerate everything; if a COMMITTED artifact changes, someone
+        # edited _mkskill/ without running go generate — refuse the tag
+        run: |
+          go generate ./...
+          git diff --exit-code || {
+            echo "::error::generated docs are stale — run: go generate ./..."; exit 1; }
+
+      - run: go vet ./...
+      - run: go test ./...
+
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # gh release create
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: build the binary
+        # no cgo anywhere in the tree: ubuntu cross-compiles the windows exe
+        env:
+          CGO_ENABLED: "0"
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags="-s -w" -o dist/ot4xb-tool.exe .
+          (cd dist && sha256sum ot4xb-tool.exe > SHA256SUMS)
+
+      - name: publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --verify-tag --generate-notes --title "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY"
