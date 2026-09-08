@@ -2,3 +2,7 @@
 # whatever core.autocrlf says; the Markdown files are CRLF on disk, LF in the repository.
 * text=auto eol=lf
 *.md text eol=crlf
+
+# The cbk2obj goldens are compared byte for byte against output the generator
+# always writes with CRLF: they must land CRLF in every checkout.
+*.asm text eol=crlf
