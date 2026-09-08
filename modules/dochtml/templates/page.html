@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ .Title }} - {{ .Site }}</title>
+{{ with .Short }}<meta name="description" content="{{ . }}">{{ end }}
+{{ with .Keywords }}<meta name="keywords" content="{{ join . ", " }}">{{ end }}
+<link rel="canonical" href="{{ .File }}">
+</head>
+<body>
+<header>
+<a href="{{ .Index }}">{{ .Site }}</a>
+</header>
+<main>
+{{ .Body }}
+{{ with .Categories }}<p>Categories: {{ join . ", " }}</p>{{ end }}
+{{ with .Books }}<p>Books: {{ join . ", " }}</p>{{ end }}
+</main>
+<footer>
+<p>{{ .Site }}</p>
+</footer>
+</body>
+</html>

@@ -27,6 +27,10 @@ func (t *Tool) runStep(e *entry, name string, cfg json.RawMessage, o Options) er
 		return t.stepDef2lib20(e, cfg, o)
 	case "artefacts":
 		return t.stepArtefacts(e, cfg, o)
+	case "srcsplit":
+		return t.stepSrcsplit(e, cfg, o)
+	case "docs":
+		return t.stepDocs(e, cfg, o)
 	}
 	// composite step: recognised keys in a fixed order
 	var m map[string]json.RawMessage
@@ -201,8 +205,9 @@ func (t *Tool) stepArtefacts(e *entry, cfg json.RawMessage, o Options) error {
 		Type        string `json:"type"`
 		ZipFilename string `json:"zip_filename"`
 		Content     []struct {
-			In  []string `json:"in"`
-			Out string   `json:"out"`
+			In               []string `json:"in"`
+			Out              string   `json:"out"`
+			CleanDocComments bool     `json:"clean_doc_comments"`
 		} `json:"content"`
 	}
 	if err := json.Unmarshal(cfg, &list); err != nil {
@@ -229,7 +234,7 @@ func (t *Tool) stepArtefacts(e *entry, cfg json.RawMessage, o Options) error {
 				}
 				in = append(in, ep)
 			}
-			contents = append(contents, artefacts.Content{In: in, Out: c.Out})
+			contents = append(contents, artefacts.Content{In: in, Out: c.Out, Clean: c.CleanDocComments})
 		}
 		names, err := artefacts.Zip(zp, contents, artefacts.Options{
 			Warn: func(msg string) { o.Warn("artefacts: " + msg) },

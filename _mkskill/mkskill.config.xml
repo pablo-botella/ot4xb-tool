@@ -1,0 +1,29 @@
+<mkskill>
+  <version-spec params="major:byte,minor:[0-99],build:word">
+    <version major="0" minor="0" build="1" lock="major">
+      <ts>2026-09-08T08:25:03Z</ts>
+    </version>
+    <label key="title" volatile="true" default-to-ts="true">2026-09-08T08:25:03Z</label>
+    <create file="__publish.bat" git-ignore="true" eol="crlf">
+@echo off
+set TAG={$$$ version $$$}
+git rev-parse -q --verify refs/tags/%TAG% &gt;NUL 2&gt;&amp;1 &amp;&amp; goto :exists
+git ls-remote --exit-code --tags origin %TAG% &gt;NUL 2&gt;&amp;1 &amp;&amp; goto :exists
+git tag %TAG%
+git push origin main --tags
+exit /b 0
+:exists
+echo ERROR: tag %TAG% already exists - run -vinc first
+exit /b 1
+</create>
+  </version-spec>
+  <project id="main" name="ot4xb-tool" description="The ot4xb tool set in one binary: build steps, version scripts, xbmac code generation, ALINK import libraries, callback objects, and the in-source documentation pipeline (scan, split, cross-check, compile to SQLite, resolve)" project-type="Go-CLI">
+    <meta>
+      <module>github.com/pablo-botella/ot4xb-tool</module>
+      <license>MIT</license>
+    </meta>
+  </project>
+  <version-history max="10">
+    <release version="v0.0.1" ts="2026-09-08T08:25:03Z" title="2026-09-08T08:25:03Z" method="vinc-build"></release>
+  </version-history>
+</mkskill>

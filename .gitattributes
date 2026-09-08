@@ -1,0 +1,4 @@
+# Line endings: everything stays LF in the working copy and in the repository,
+# whatever core.autocrlf says; the Markdown files are CRLF on disk, LF in the repository.
+* text=auto eol=lf
+*.md text eol=crlf
