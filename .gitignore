@@ -20,3 +20,6 @@ coverage.html
 Thumbs.db
 desktop.ini
 __publish.bat
+
+# Release staging: the local mirror of what the release workflow builds.
+/dist/
