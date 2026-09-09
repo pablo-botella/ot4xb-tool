@@ -187,8 +187,19 @@ func TestPeekDB(t *testing.T) {
 	if got != filepath.Join(dir, "o", "d.db") {
 		t.Fatalf("got %s", got)
 	}
-	os.WriteFile(p+".user", []byte(`{"db": "D:/elsewhere/other.db"}`), 0o644)
-	if got, err = PeekDB(p); err != nil || filepath.ToSlash(got) != "D:/elsewhere/other.db" {
+	// the .user wins, and an absolute path in it is taken as it is. Built at
+	// run time: a literal like "D:/x" is absolute on Windows and relative
+	// everywhere else, which would resolve against the folder of the file.
+	abs := filepath.Join(t.TempDir(), "elsewhere", "other.db")
+	os.WriteFile(p+".user", []byte(`{"db": "`+filepath.ToSlash(abs)+`"}`), 0o644)
+	if got, err = PeekDB(p); err != nil || filepath.ToSlash(got) != filepath.ToSlash(abs) {
 		t.Fatalf("the .user must win: %s (%v)", got, err)
+	}
+
+	// and a relative one in the .user resolves against the same folder, since
+	// both files live side by side
+	os.WriteFile(p+".user", []byte(`{"db": "../beside/other.db"}`), 0o644)
+	if got, err = PeekDB(p); err != nil || got != filepath.Join(filepath.Dir(dir), "beside", "other.db") {
+		t.Fatalf("relative in the .user: %s (%v)", got, err)
 	}
 }
