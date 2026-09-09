@@ -79,6 +79,9 @@ its folder with the trailing slash (required), `file` the output name
 every `<url>`, `indexes` the priority of the index pages when it differs; `clean_urls`
 drops the `.html` from every link, sitemap entry and search index entry
 (default: false).
+A key this build does not know is an error naming it, in the file and in
+its `sitemap` object alike: dropped in silence, a typo and a stale binary
+both look like an option that had no effect.
 Every flag wins over the file, so the same `.site-def` can be written
 somewhere else with `-out`.
 

@@ -27,3 +27,33 @@ func TestLoadSite(t *testing.T) {
 		t.Errorf("no templates: %v %q", err, c.TemplatesDir())
 	}
 }
+
+// TestLoadSiteUnknownKey: a key this build does not know has to be an error
+// naming it. Dropped in silence it looks like the option had no effect, which
+// is exactly what a typo and a stale binary both look like.
+func TestLoadSiteUnknownKey(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "x.site-def")
+
+	os.WriteFile(p, []byte(`{"out": "./o", "clean_url": true}`), 0o644)
+	_, err := LoadSite(p)
+	if err == nil || !strings.Contains(err.Error(), "clean_url") {
+		t.Errorf("a typo must name the key, got %v", err)
+	}
+	// the right one still loads
+	os.WriteFile(p, []byte(`{"out": "./o", "clean_urls": true}`), 0o644)
+	c, err := LoadSite(p)
+	if err != nil || !c.CleanURLs {
+		t.Errorf("clean_urls: %v %+v", err, c)
+	}
+	// and so does an unknown key inside the sitemap object
+	os.WriteFile(p, []byte(`{"out": "./o", "sitemap": {"base": "https://x.test/", "prioriti": "0.5"}}`), 0o644)
+	if _, err := LoadSite(p); err == nil || !strings.Contains(err.Error(), "prioriti") {
+		t.Errorf("nested typo: %v", err)
+	}
+	// two values in the file are still refused
+	os.WriteFile(p, []byte(`{"out": "./o"}{"out": "./p"}`), 0o644)
+	if _, err := LoadSite(p); err == nil {
+		t.Error("a second JSON value must be an error")
+	}
+}

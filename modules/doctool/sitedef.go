@@ -25,8 +25,10 @@
 package doctool
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -86,15 +88,25 @@ type Sitemap struct {
 	Indexes    string `json:"indexes"`
 }
 
-// Load reads and checks a .site-def file.
+// Load reads and checks a .site-def file. A key the build does not know is an
+// error naming it: a typo, or a file written for a newer version of the tool,
+// would otherwise be dropped without a word and the site come out as if the
+// key had never been there.
 func LoadSite(path string) (*Site, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 	c := &Site{}
-	if err := json.Unmarshal(data, c); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(c); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	// Decode stops at the end of the first value; Unmarshal used to refuse
+	// anything after it, so keep refusing it
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, fmt.Errorf("%s: more than one JSON value", path)
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
