@@ -12,8 +12,8 @@ single place every product (reference pages, lookups, changelogs) is
 generated from afterwards. The sources stay the only truth.
 
 ```
-ot4xb-tool [-q] compile [-doctool <file>] -root <projectdir> -db <file.db> -src <file|glob|dir> [-src …]
-ot4xb-tool [-q] resolve [-doctool <file>] -db <file.db>
+ot4xb-tool [-q] doc compile [-doctool <file>] -root <projectdir> -db <file.db> -src <file|glob|dir> [-src …]
+ot4xb-tool [-q] doc resolve [-doctool <file>] -db <file.db>
 ```
 
 ### `compile` — one pass per source
@@ -55,7 +55,8 @@ topics and records what is broken as issues (code `resolve/…`), then prints
 them as `file:line: error: message`. It then materializes the pages: the
 `pages` and `page_trail` tables (see below) get one row per final page with
 its logical location, computed from the books, indexes and sections of the
-`.doc-tool` — which is why `resolve` wants `-doctool`. The generators read
+configuration — which is why `resolve` needs one: from `-doctool`, or,
+failing that, from the database itself (see `cfg` below). The generators read
 them and refuse a database that has not been resolved. It is re-runnable: its own issues are
 dropped and recomputed every time.
 
@@ -82,7 +83,8 @@ scattered content and C++ overloads work.
 | `topic_category` | `idsrc`, `idtopic`, `category` | N:N — a topic belongs to one or more categories (`winapi/structures`) |
 | `pages` | `file`, `title`, `kind`, `book`, `short`, `keywords`, `categories`, `parent` | written by `resolve`: one row per final page (topic, group, index, category page) with its first book, its short description and keywords as plain text, and `parent`, the file of the last step of its trail |
 | `page_trail` | `file`, `pos`, `title`, `target` | written by `resolve`: the logical location of every page, step by step — general index, book index, section (`index-x.md#section`), category page |
-| `meta` | `key`, `value` | schema version (2), project data |
+| `cfg` | `k`, `v` | the part of the configuration that describes the documentation — `books`, `index`, `kinds` — one JSON document each, written by `compile` |
+| `meta` | `key`, `value` | schema version (3), project data |
 
 Every row carries `idsrc`, which is what makes "replace this file" a plain
 delete. A **topic** is the whole documented thing; a **segment** is one
@@ -104,6 +106,18 @@ has no file and line of its own: its location is its first segment.
 is no categories table — a category exists because it is used, the list is
 `SELECT DISTINCT category FROM topic_category`, and the `/` in the path is
 the hierarchy.
+
+**The configuration travels with the data.** `compile` stores the `books`,
+`index` and `kinds` of the `.doc-tool` in `cfg`, right after it writes the
+sources: at that moment the configuration is loaded and validated, and from
+then on the database carries what generating needs. The rest of the file —
+`db`, `src`, `folders` — never travels: it names paths of the machine that
+compiled and means nothing anywhere else. So a repository holding only the
+`.db` runs `resolve`, `gendoc` and `gensite` with no `.doc-tool` at all, and
+one that keeps a `.doc-tool` for its own paths need not repeat the blocks in
+it: every block the file leaves out comes from `cfg`. What the file declares
+wins over what the database offers, and with neither the built-in
+configuration applies.
 
 The database is single-process by design: one connection, no concurrency;
 another process wanting the data works on its own copy. Reads are always

@@ -23,7 +23,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/pablo-botella/ot4xb-tool/modules/srcsplit"
+	"github.com/pablo-botella/ot4xb-tool/modules/doctool/split"
 )
 
 // Content is one item of a zip artefact: the files that go into one folder
@@ -35,7 +35,7 @@ type Content struct {
 	// Out is the destination folder inside the zip: "/", "/include", ...
 	Out string
 	// Clean packs the clean projection of every source that carries /*{{ }}*/
-	// documentation blocks (srcsplit.Code); files without them go as they are.
+	// documentation blocks (split.Code); files without them go as they are.
 	Clean bool
 }
 
@@ -179,7 +179,7 @@ func addFile(zw *zip.Writer, src, name string, clean bool) error {
 		return err
 	}
 	if clean && bytes.Contains(data, []byte("/*{{")) {
-		if data, _, err = srcsplit.Code(data); err != nil {
+		if data, _, err = split.Code(data); err != nil {
 			return err
 		}
 	}

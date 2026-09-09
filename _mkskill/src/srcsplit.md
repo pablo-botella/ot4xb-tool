@@ -14,7 +14,7 @@ documented ones are always in the repository) and the *doc* one (only the
 doc blocks, verbatim, in order):
 
 ```
-ot4xb-tool [-q] srcsplit -src <file|glob|dir> [-code <dst>] [-doc <dst>] [-bak | -force] [-check]
+ot4xb-tool [-q] doc split -src <file|glob|dir> [-code <dst>] [-doc <dst>] [-bak | -force] [-check]
 ```
 
 | option | meaning |

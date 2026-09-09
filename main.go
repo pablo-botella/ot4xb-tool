@@ -6,12 +6,12 @@
 //	ot4xb-tool [-q] xbmac2h [-lib NAME] file.xbmac
 //	ot4xb-tool [-q] def2lib20 [-monkey] [-o out.lib] [-dll name.dll] [-prefix _] [-ts seconds] file.def
 //	ot4xb-tool [-q] cbk2obj [-asm] [-o out.obj] [-ts seconds] file.cbk
-//	ot4xb-tool [-q] scandoc -src path [-fields] [-tags] [-tagsout file]
-//	ot4xb-tool [-q] srcsplit -src path|glob [-code dst] [-doc dst] [-bak|-force] [-check]
-//	ot4xb-tool [-q] doccheck -src dir -xbmac file.xbmac [-full]
-//	ot4xb-tool [-q] compile -root dir -db file.db -src path|glob|dir [-src ...]
-//	ot4xb-tool [-q] resolve -db file.db
-//	ot4xb-tool [-q] gendoc -db file.db -out dir
+//	ot4xb-tool [-q] doc scan -src path [-fields] [-tags] [-tagsout file]
+//	ot4xb-tool [-q] doc split -src path|glob [-code dst] [-doc dst] [-bak|-force] [-check]
+//	ot4xb-tool [-q] doc check -src dir -xbmac file.xbmac [-full]
+//	ot4xb-tool [-q] doc compile -root dir -db file.db -src path|glob|dir [-src ...]
+//	ot4xb-tool [-q] doc resolve -db file.db
+//	ot4xb-tool [-q] doc gen -db file.db -out dir
 package main
 
 // The docs are composed from _mkskill/ — edit the sources there, then:
@@ -19,6 +19,7 @@ package main
 //go:generate go run github.com/pablo-botella/mkskill/cmd/mkskill@latest -q -vbuild
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -27,16 +28,15 @@ import (
 
 	"github.com/pablo-botella/ot4xb-tool/modules/cbk2obj"
 	"github.com/pablo-botella/ot4xb-tool/modules/def2lib20"
-	"github.com/pablo-botella/ot4xb-tool/modules/doccheck"
-	"github.com/pablo-botella/ot4xb-tool/modules/doccompile"
-	"github.com/pablo-botella/ot4xb-tool/modules/docconf"
-	"github.com/pablo-botella/ot4xb-tool/modules/docdb"
-	"github.com/pablo-botella/ot4xb-tool/modules/docgen"
-	"github.com/pablo-botella/ot4xb-tool/modules/dochtml"
-	"github.com/pablo-botella/ot4xb-tool/modules/docresolve"
-	"github.com/pablo-botella/ot4xb-tool/modules/sitedef"
-	"github.com/pablo-botella/ot4xb-tool/modules/srcdoc"
-	"github.com/pablo-botella/ot4xb-tool/modules/srcsplit"
+	"github.com/pablo-botella/ot4xb-tool/modules/doctool"
+	"github.com/pablo-botella/ot4xb-tool/modules/doctool/check"
+	"github.com/pablo-botella/ot4xb-tool/modules/doctool/compile"
+	"github.com/pablo-botella/ot4xb-tool/modules/doctool/docdb"
+	"github.com/pablo-botella/ot4xb-tool/modules/doctool/gen"
+	"github.com/pablo-botella/ot4xb-tool/modules/doctool/resolve"
+	"github.com/pablo-botella/ot4xb-tool/modules/doctool/scan"
+	"github.com/pablo-botella/ot4xb-tool/modules/doctool/site"
+	"github.com/pablo-botella/ot4xb-tool/modules/doctool/split"
 	"github.com/pablo-botella/ot4xb-tool/modules/vbuild"
 	"github.com/pablo-botella/ot4xb-tool/modules/vsxbt"
 	"github.com/pablo-botella/ot4xb-tool/modules/xbmac2h"
@@ -47,16 +47,51 @@ var quiet bool
 
 // useDocTool loads a .doc-tool file (the built-in configuration when path is
 // empty) and installs its kinds in the scanner.
-func useDocTool(path string) (*docconf.Config, error) {
-	conf := docconf.Default()
+func useDocTool(path string) (*doctool.Config, error) {
+	conf := doctool.Default()
 	if path != "" {
 		var err error
-		if conf, err = docconf.Load(path); err != nil {
+		if conf, err = doctool.Load(path); err != nil {
 			return nil, err
 		}
 	}
-	srcdoc.Use(conf.KindTable())
+	scan.Use(conf.KindTable())
 	return conf, nil
+}
+
+// useDocToolDB is useDocTool for the commands that read a database: every
+// shared block the .doc-tool leaves out - books, index, kinds - comes from the
+// cfg table, written when the sources were collected. So a repository holding
+// only the .db generates without a .doc-tool, and one that keeps a .doc-tool
+// for its local paths need not repeat the blocks in it.
+func useDocToolDB(path, dbPath string) (*doctool.Config, error) {
+	if dbPath == "" {
+		return useDocTool(path)
+	}
+	db, err := docdb.Open(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	conf, err := doctool.LoadDB(path, db)
+	if err != nil {
+		return nil, err
+	}
+	scan.Use(conf.KindTable())
+	return conf, nil
+}
+
+// writeCfgBlocks stores the shared configuration blocks in the database just
+// compiled. Collecting is the moment for it: the configuration is loaded and
+// validated right there, and from then on the database carries what
+// generating needs.
+func writeCfgBlocks(dbPath string, conf *doctool.Config) error {
+	db, err := docdb.Open(dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return conf.SaveDB(db)
 }
 
 // docToolArg parses "-doctool <file>" at args[i]; ok is false when args[i]
@@ -98,22 +133,10 @@ func main() {
 		err = runXbmac2h(args[1:])
 	case "def2lib20":
 		err = runDef2lib20(args[1:])
-	case "gensite":
-		err = runGensite(args[1:])
 	case "cbk2obj":
 		err = runCbk2obj(args[1:])
-	case "scandoc":
-		err = runScandoc(args[1:])
-	case "srcsplit":
-		err = runSrcsplit(args[1:])
-	case "doccheck":
-		err = runDoccheck(args[1:])
-	case "compile":
-		err = runCompile(args[1:])
-	case "resolve":
-		err = runResolve(args[1:])
-	case "gendoc":
-		err = runGendoc(args[1:])
+	case "doc":
+		err = runDoc(args[1:])
 	case "-tool", "-bs":
 		err = runBuildStep(args)
 	case "-h", "--help", "help", "/?":
@@ -187,9 +210,56 @@ func runVbuild(args []string) error {
 	return nil
 }
 
+// runDoc dispatches the documentation subtree: one subcommand per module of
+// modules/doctool. They were top-level commands until the tree grew enough to
+// deserve a branch of its own.
+func runDoc(args []string) error {
+	if len(args) < 1 {
+		docUsage()
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "scan":
+		return runScandoc(args[1:])
+	case "split":
+		return runSrcsplit(args[1:])
+	case "check":
+		return runDoccheck(args[1:])
+	case "compile":
+		return runCompile(args[1:])
+	case "resolve":
+		return runResolve(args[1:])
+	case "gen":
+		return runGendoc(args[1:])
+	case "site":
+		return runGensite(args[1:])
+	case "-h", "--help", "help", "/?":
+		docUsage()
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "ot4xb-tool doc: unknown subcommand %q\n\n", args[0])
+	docUsage()
+	os.Exit(2)
+	return nil
+}
+
+func docUsage() {
+	fmt.Fprintln(os.Stderr, "usage: ot4xb-tool [-q] doc <subcommand> [options]")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "subcommands:")
+	fmt.Fprintln(os.Stderr, "  scan      scan C/C++ sources for /*{{ }}*/ documentation markers: print the model and diagnostics")
+	fmt.Fprintln(os.Stderr, "  split     split an authoring source into its code projection (no /*{{ }}*/ doc) and its doc projection")
+	fmt.Fprintln(os.Stderr, "  check     cross-check the documented surface against the .xbmac registration list")
+	fmt.Fprintln(os.Stderr, "  compile   compile documented sources into the intermediate SQLite database (any number of passes)")
+	fmt.Fprintln(os.Stderr, "  resolve   the a-posteriori step over that database: broken references, include cycles, duplicates")
+	fmt.Fprintln(os.Stderr, "  gen       generate the reference Markdown from that database: one file per topic (slugs) plus an index")
+	fmt.Fprintln(os.Stderr, "  site      generate a static HTML site from that database, as a .site-def describes it; not a build step")
+}
+
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: ot4xb-tool [-q] <command> [options]")
 	fmt.Fprintln(os.Stderr, "       ot4xb-tool [-q] [-tool file.ot4xb-tool] -bs entry")
+	fmt.Fprintln(os.Stderr, "       ot4xb-tool [-q] doc <subcommand> [options]")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "commands:")
 	fmt.Fprintln(os.Stderr, "  -bs entry   run a build-step entry of the project tool file (default: the single *.ot4xb-tool of the folder)")
@@ -197,13 +267,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  xbmac2h     generate <base>_xbexports.hpp, <base>_xbfunclist.hpp, <base>Cpp.def and <base>.def from a .xbmac list")
 	fmt.Fprintln(os.Stderr, "  def2lib20   build an x86 COFF import library (.lib, long format, ALINK compatible) from a .def")
 	fmt.Fprintln(os.Stderr, "  cbk2obj     compile an Xbase++ callback script (.cbk) into a linkable x86 COFF object (.obj)")
-	fmt.Fprintln(os.Stderr, "  scandoc     scan C/C++ sources for /*{{ }}*/ documentation markers: print the model and diagnostics")
-	fmt.Fprintln(os.Stderr, "  srcsplit    split an authoring source into its code projection (no /*{{ }}*/ doc) and its doc projection")
-	fmt.Fprintln(os.Stderr, "  doccheck    cross-check the documented surface against the .xbmac registration list")
-	fmt.Fprintln(os.Stderr, "  compile     compile documented sources into the intermediate SQLite database (any number of passes)")
-	fmt.Fprintln(os.Stderr, "  resolve     the a-posteriori step over that database: broken references, include cycles, duplicates")
-	fmt.Fprintln(os.Stderr, "  gendoc      generate the reference Markdown from that database: one file per topic (slugs) plus an index")
-	fmt.Fprintln(os.Stderr, "  gensite     generate a static HTML site from that database, as a .site-def describes it; not a build step")
+	fmt.Fprintln(os.Stderr, "  doc         the documentation pipeline: scan, split, check, compile, resolve, gen, site")
 }
 
 // runBuildStep handles "ot4xb-tool [-tool file] -bs entry" (flags in any
@@ -372,7 +436,7 @@ func runCbk2obj(args []string) error {
 // scandocUsage prints the scandoc parameter summary (all parameters are
 // named; positionals end up being a pain).
 func scandocUsage() {
-	fmt.Fprintln(os.Stderr, "usage: ot4xb-tool [-q] scandoc -src path [-fields] [-issues]")
+	fmt.Fprintln(os.Stderr, "usage: ot4xb-tool [-q] doc scan -src path [-fields] [-issues]")
 	fmt.Fprintln(os.Stderr, "  -src path     file or directory to scan (subfolders: .prg/.ch only)")
 	fmt.Fprintln(os.Stderr, "  -fields       print every field of every marker")
 	fmt.Fprintln(os.Stderr, "  -issues       print only the issues (nothing else)")
@@ -383,10 +447,10 @@ func scandocUsage() {
 // fields with -fields, and every issue on stderr as file:line. It exits non
 // zero when any file has an error-severity issue.
 func runScandoc(args []string) error {
-	var path, doctool string
+	var path, docToolFile string
 	var fields, issuesOnly bool
 	for i := 0; i < len(args); i++ {
-		if ok, err := docToolArg(args, &i, &doctool); ok {
+		if ok, err := docToolArg(args, &i, &docToolFile); ok {
 			if err != nil {
 				return err
 			}
@@ -415,32 +479,32 @@ func runScandoc(args []string) error {
 		scandocUsage()
 		return fmt.Errorf("-src path missing")
 	}
-	if _, err := useDocTool(doctool); err != nil {
+	if _, err := useDocTool(docToolFile); err != nil {
 		return err
 	}
 	st, err := os.Stat(path)
 	if err != nil {
 		return err
 	}
-	var files []*srcdoc.File
+	var files []*scan.File
 	if st.IsDir() {
-		paths, err := doccompile.ExpandSources([]string{path}, nil)
+		paths, err := compile.ExpandSources([]string{path}, nil)
 		if err != nil {
 			return err
 		}
 		for _, p := range paths {
-			f, err := srcdoc.ScanFile(p)
+			f, err := scan.ScanFile(p)
 			if err != nil {
 				return err
 			}
 			files = append(files, f)
 		}
 	} else {
-		f, err := srcdoc.ScanFile(path)
+		f, err := scan.ScanFile(path)
 		if err != nil {
 			return err
 		}
-		files = []*srcdoc.File{f}
+		files = []*scan.File{f}
 	}
 	nErr, nTopics := 0, 0
 	for _, f := range files {
@@ -489,7 +553,7 @@ func runScandoc(args []string) error {
 }
 
 func srcsplitUsage() {
-	fmt.Fprintln(os.Stderr, "usage: ot4xb-tool [-q] srcsplit -src path|glob [-code dst] [-doc dst] [-bak|-force] [-check]")
+	fmt.Fprintln(os.Stderr, "usage: ot4xb-tool [-q] doc split -src path|glob [-code dst] [-doc dst] [-bak|-force] [-check]")
 	fmt.Fprintln(os.Stderr, "  -src path   a source file, a folder of them, or a glob mask (folder/mask)")
 	fmt.Fprintln(os.Stderr, "  -code dst   write the code projection (the source without its /*{{ }}*/ doc blocks) to dst")
 	fmt.Fprintln(os.Stderr, "  -doc dst    write the doc projection (only the /*{{ }}*/ blocks, verbatim) to dst")
@@ -506,10 +570,10 @@ func srcsplitUsage() {
 // relative to -root. Passes are append-only per source and can be repeated;
 // nothing is resolved here (that is a separate step).
 func runCompile(args []string) error {
-	var root, dbPath, doctool string
+	var root, dbPath, docToolFile string
 	var srcs []string
 	for i := 0; i < len(args); i++ {
-		if ok, err := docToolArg(args, &i, &doctool); ok {
+		if ok, err := docToolArg(args, &i, &docToolFile); ok {
 			if err != nil {
 				return err
 			}
@@ -538,11 +602,11 @@ func runCompile(args []string) error {
 			return fmt.Errorf("compile: unexpected argument %q", args[i])
 		}
 	}
-	conf, err := useDocTool(doctool)
+	conf, err := useDocTool(docToolFile)
 	if err != nil {
 		return err
 	}
-	if doctool != "" {
+	if docToolFile != "" {
 		if root == "" {
 			root = conf.Dir
 		}
@@ -558,14 +622,17 @@ func runCompile(args []string) error {
 		}
 	}
 	if root == "" || dbPath == "" || len(srcs) == 0 {
-		return fmt.Errorf("usage: ot4xb-tool [-q] compile [-doctool <file.doc-tool>] -root <projectdir> -db <file.db> -src <path|glob|dir> [-src ...]")
+		return fmt.Errorf("usage: ot4xb-tool [-q] doc compile [-doctool <file.doc-tool>] -root <projectdir> -db <file.db> -src <path|glob|dir> [-src ...]")
 	}
-	files, err := doccompile.ExpandSources(srcs, func(m string) { fmt.Fprintln(os.Stderr, "warning:", m) })
+	files, err := compile.ExpandSources(srcs, func(m string) { fmt.Fprintln(os.Stderr, "warning:", m) })
 	if err != nil {
 		return err
 	}
-	n, err := doccompile.Compile(dbPath, root, files, func(s string) { say("%s\n", s) })
+	n, err := compile.Compile(dbPath, root, files, func(s string) { say("%s\n", s) })
 	if err != nil {
+		return err
+	}
+	if err := writeCfgBlocks(dbPath, conf); err != nil {
 		return err
 	}
 	say("compile: %d source(s) -> %s\n", n, dbPath)
@@ -576,9 +643,9 @@ func runCompile(args []string) error {
 // every reference against the topics and records the broken ones, include
 // cycles and duplicate definitions as issues (code resolve/...). Re-runnable.
 func runResolve(args []string) error {
-	var dbPath, doctool string
+	var dbPath, docToolFile string
 	for i := 0; i < len(args); i++ {
-		if ok, err := docToolArg(args, &i, &doctool); ok {
+		if ok, err := docToolArg(args, &i, &docToolFile); ok {
 			if err != nil {
 				return err
 			}
@@ -595,24 +662,26 @@ func runResolve(args []string) error {
 			return fmt.Errorf("resolve: unexpected argument %q", args[i])
 		}
 	}
-	conf, err := useDocTool(doctool)
-	if err != nil {
-		return err
-	}
-	if dbPath == "" && doctool != "" {
-		if dbPath, err = conf.DBPath(); err != nil {
+	if dbPath == "" && docToolFile != "" {
+		p, err := doctool.PeekDB(docToolFile)
+		if err != nil {
 			return err
 		}
+		dbPath = p
 	}
 	if dbPath == "" {
-		return fmt.Errorf("usage: ot4xb-tool [-q] resolve [-doctool <file.doc-tool>] -db <file.db>")
+		return fmt.Errorf("usage: ot4xb-tool [-q] doc resolve [-doctool <file.doc-tool>] -db <file.db>")
+	}
+	conf, err := useDocToolDB(docToolFile, dbPath)
+	if err != nil {
+		return err
 	}
 	db, err := docdb.Open(dbPath)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	rep, err := docresolve.Resolve(db, conf)
+	rep, err := resolve.Resolve(db, conf)
 	if err != nil {
 		return err
 	}
@@ -633,9 +702,9 @@ func runResolve(args []string) error {
 // runGendoc generates the reference Markdown from a compiled (and resolved)
 // database: one file per topic, named by its slug, plus index.md.
 func runGendoc(args []string) error {
-	var dbPath, out, doctool string
+	var dbPath, out, docToolFile string
 	for i := 0; i < len(args); i++ {
-		if ok, err := docToolArg(args, &i, &doctool); ok {
+		if ok, err := docToolArg(args, &i, &docToolFile); ok {
 			if err != nil {
 				return err
 			}
@@ -658,19 +727,21 @@ func runGendoc(args []string) error {
 			return fmt.Errorf("gendoc: unexpected argument %q", args[i])
 		}
 	}
-	conf, err := useDocTool(doctool)
+	if dbPath == "" && docToolFile != "" {
+		p, err := doctool.PeekDB(docToolFile)
+		if err != nil {
+			return err
+		}
+		dbPath = p
+	}
+	if dbPath == "" || out == "" {
+		return fmt.Errorf("usage: ot4xb-tool [-q] doc gen [-doctool <file.doc-tool>] -db <file.db> -out <dir>")
+	}
+	conf, err := useDocToolDB(docToolFile, dbPath)
 	if err != nil {
 		return err
 	}
-	if dbPath == "" && doctool != "" {
-		if dbPath, err = conf.DBPath(); err != nil {
-			return err
-		}
-	}
-	if dbPath == "" || out == "" {
-		return fmt.Errorf("usage: ot4xb-tool [-q] gendoc [-doctool <file.doc-tool>] -db <file.db> -out <dir>")
-	}
-	_, err = docgen.Generate(dbPath, out, conf, func(s string) {
+	_, err = gen.Generate(dbPath, out, conf, func(s string) {
 		if strings.Contains(s, "warning:") {
 			fmt.Fprintln(os.Stderr, s)
 		} else {
@@ -684,10 +755,10 @@ func runGendoc(args []string) error {
 // registration list (xbmac2h): registered-but-undocumented (coverage gaps) and,
 // with -full, documented-but-unregistered (stale or misspelled doc).
 func runDoccheck(args []string) error {
-	var src, mac, doctool string
+	var src, mac, docToolFile string
 	var full bool
 	for i := 0; i < len(args); i++ {
-		if ok, err := docToolArg(args, &i, &doctool); ok {
+		if ok, err := docToolArg(args, &i, &docToolFile); ok {
 			if err != nil {
 				return err
 			}
@@ -713,18 +784,18 @@ func runDoccheck(args []string) error {
 		}
 	}
 	if src == "" || mac == "" {
-		return fmt.Errorf("usage: ot4xb-tool [-q] doccheck [-doctool <file.doc-tool>] -src <sourcedir> -xbmac <file.xbmac> [-full]")
+		return fmt.Errorf("usage: ot4xb-tool [-q] doc check [-doctool <file.doc-tool>] -src <sourcedir> -xbmac <file.xbmac> [-full]")
 	}
-	if _, err := useDocTool(doctool); err != nil {
+	if _, err := useDocTool(docToolFile); err != nil {
 		return err
 	}
-	paths, err := doccompile.ExpandSources([]string{src}, nil)
+	paths, err := compile.ExpandSources([]string{src}, nil)
 	if err != nil {
 		return err
 	}
-	var files []*srcdoc.File
+	var files []*scan.File
 	for _, p := range paths {
-		f, err := srcdoc.ScanFile(p)
+		f, err := scan.ScanFile(p)
 		if err != nil {
 			return err
 		}
@@ -734,7 +805,7 @@ func runDoccheck(args []string) error {
 	if err != nil {
 		return err
 	}
-	rep := doccheck.Check(files, m)
+	rep := check.Check(files, m)
 
 	say("doccheck: registered %d functions, %d structures, %d c-exports; documented %d/%d/%d\n",
 		rep.NRegFun, rep.NRegStruct, rep.NRegC, rep.NDocFun, rep.NDocStruct, rep.NDocC)
@@ -801,7 +872,7 @@ func runSrcsplit(args []string) error {
 		srcsplitUsage()
 		return fmt.Errorf("give -code and/or -doc")
 	}
-	res, err := srcsplit.Run(src, srcsplit.Options{
+	res, err := split.Run(src, split.Options{
 		Code:  code,
 		Doc:   doc,
 		Bak:   bak,
@@ -866,12 +937,9 @@ func ext(p string) string {
 // the ones of the templates folder of the site), plus the style sheet and
 // the assets folder when the .site-def asks for them.
 func runGensite(args []string) error {
-	var dbPath, out, doctool, site, title, templates, assets, export, sitemap, search string
-	gencss := false
-	var sm *dochtml.SitemapOptions
-	var siteKw []string
+	var o site.Options
 	for i := 0; i < len(args); i++ {
-		if ok, err := docToolArg(args, &i, &doctool); ok {
+		if ok, err := docToolArg(args, &i, &o.DocTool); ok {
 			if err != nil {
 				return err
 			}
@@ -884,99 +952,36 @@ func runGensite(args []string) error {
 			}
 			i++
 			switch args[i-1] {
-			case "-sitemap":
-				sitemap = args[i]
-			case "-search":
-				search = args[i]
 			case "-db":
-				dbPath = args[i]
+				o.DB = args[i]
 			case "-out":
-				out = args[i]
+				o.Out = args[i]
 			case "-site":
-				site = args[i]
+				o.Site = args[i]
 			case "-title":
-				title = args[i]
+				o.Title = args[i]
 			case "-templates":
-				templates = args[i]
+				o.Templates = args[i]
 			case "-assets":
-				assets = args[i]
+				o.Assets = args[i]
 			case "-export-templates":
-				export = args[i]
+				o.Export = args[i]
+			case "-sitemap":
+				o.Sitemap = args[i]
+			case "-search":
+				o.Search = args[i]
 			}
 		case "-gencss":
-			gencss = true
+			o.GenCSS = true
 		default:
 			return fmt.Errorf("gensite: unexpected argument %q", args[i])
 		}
 	}
-	if export != "" {
-		names, err := dochtml.ExportTemplates(export)
-		if err != nil {
-			return err
-		}
-		say("gensite: %d template(s) written to %s\n", len(names), export)
-		if out == "" && site == "" {
-			return nil
-		}
+	o.Log = func(m string) { say("%s\n", m) }
+	o.Warn = func(m string) { fmt.Fprintln(os.Stderr, m) }
+	err := site.Run(o)
+	if errors.Is(err, site.ErrUsage) {
+		return fmt.Errorf("usage: ot4xb-tool [-q] doc site [-doctool <file.doc-tool>] -db <file.db> -site <file.site-def> | -out <dir> [-title <text>] [-templates <dir>] [-assets <dir>] [-gencss] [-sitemap <base-url>] [-export-templates <dir>]")
 	}
-	if site != "" {
-		def, err := sitedef.Load(site)
-		if err != nil {
-			return err
-		}
-		if doctool == "" {
-			doctool = def.DocToolPath()
-		}
-		if dbPath == "" {
-			dbPath = def.DBPath()
-		}
-		if out == "" {
-			out = def.OutDir()
-		}
-		if templates == "" {
-			templates = def.TemplatesDir()
-		}
-		if assets == "" {
-			assets = def.AssetsDir()
-		}
-		if title == "" {
-			title = def.Title
-		}
-		gencss = gencss || def.GenCSS
-		siteKw = def.Keywords
-		if search == "" {
-			search = def.Search
-		}
-		if def.Sitemap != nil {
-			sm = &dochtml.SitemapOptions{Base: def.Sitemap.Base, File: def.Sitemap.File, ChangeFreq: def.Sitemap.ChangeFreq,
-				Priority: def.Sitemap.Priority, Indexes: def.Sitemap.Indexes}
-		}
-	}
-	if sitemap != "" {
-		if sm == nil {
-			sm = &dochtml.SitemapOptions{}
-		}
-		sm.Base = sitemap
-	}
-	conf, err := useDocTool(doctool)
-	if err != nil {
-		return err
-	}
-	if doctool != "" && dbPath == "" {
-		if dbPath, err = conf.DBPath(); err != nil {
-			return err
-		}
-	}
-	if title == "" {
-		title = conf.Index.Title
-	}
-	if dbPath == "" || out == "" {
-		return fmt.Errorf("usage: ot4xb-tool [-q] gensite [-doctool <file.doc-tool>] -db <file.db> -site <file.site-def> | -out <dir> [-title <text>] [-templates <dir>] [-assets <dir>] [-gencss] [-sitemap <base-url>] [-export-templates <dir>]")
-	}
-	pages, err := docgen.Build(dbPath, conf, func(m string) { fmt.Fprintln(os.Stderr, m) })
-	if err != nil {
-		return err
-	}
-	return dochtml.Write(pages, out, dochtml.Options{Title: title, TemplatesDir: templates, Assets: assets, GenCSS: gencss,
-		Sitemap: sm, Keywords: siteKw, Search: search, Log: func(m string) { say("%s\n", m) }})
+	return err
 }

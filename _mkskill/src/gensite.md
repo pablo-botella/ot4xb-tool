@@ -9,9 +9,9 @@ mkskill:
 Outside the build, from the same database `gendoc` reads:
 
 ```
-ot4xb-tool [-q] gensite -site <file.site-def> [-doctool <file>] [-db <file.db>] [-out <dir>] [-title <text>] [-templates <dir>] [-assets <dir>] [-gencss]
-ot4xb-tool [-q] gensite [-doctool <file>] -db <file.db> -out <dir> [-title <text>] [-templates <dir>] [-assets <dir>] [-gencss]
-ot4xb-tool gensite -export-templates <dir>
+ot4xb-tool [-q] doc site -site <file.site-def> [-doctool <file>] [-db <file.db>] [-out <dir>] [-title <text>] [-templates <dir>] [-assets <dir>] [-gencss]
+ot4xb-tool [-q] doc site [-doctool <file>] -db <file.db> -out <dir> [-title <text>] [-templates <dir>] [-assets <dir>] [-gencss]
+ot4xb-tool doc site -export-templates <dir>
 ```
 
 Every page of the documentation - topics, groups, the indexes and the
@@ -37,6 +37,8 @@ in its own JSON file, `<name>.site-def`, normally in the folder of the site
   "doc_tool": "../ot4xb.doc-tool",
   "db": "../out/ot4xb.db",
   "templates": "./templates",
+  "template_page": "doc-page.html",
+  "template_index": "doc-index.html",
   "assets": "./assets",
   "out": "./out",
   "title": "ot4xb Reference",
@@ -59,7 +61,11 @@ script at all. Without the key nothing is written.
 
 Paths are relative to the file. `doc_tool` and `db` locate the
 documentation (the flags of the same name override them); `templates` is
-the folder whose files replace the built-in templates; `assets` is a folder
+the folder whose files replace the built-in templates, and `template_page`
+and `template_index` name the files to take from it - without them the names
+are `page.html` and `index.html`, which lets a single folder hold the
+templates of one site only; a name given here and missing from the folder is
+an error, never a silent fall back to the built-in one; `assets` is a folder
 copied into `out` as it is, files and subfolders - a style sheet, a favicon,
 `robots.txt`, `_redirects` (the `static` folder of other generators);
 `out` is where the site goes (required); `title` is the header of every page

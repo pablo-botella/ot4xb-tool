@@ -10,7 +10,7 @@ The `.xbmac` registration list is the Xbase++ surface of the DLL, and only
 that. `doccheck` cross-checks it against what the sources document:
 
 ```
-ot4xb-tool [-q] doccheck -src <dir> -xbmac <file.xbmac> [-full]
+ot4xb-tool [-q] doc check -src <dir> -xbmac <file.xbmac> [-full]
 ```
 
 It scans the directory like `scandoc`, parses the list like `xbmac2h`, and

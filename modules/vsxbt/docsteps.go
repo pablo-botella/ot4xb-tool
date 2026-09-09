@@ -10,13 +10,13 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/pablo-botella/ot4xb-tool/modules/doccompile"
-	"github.com/pablo-botella/ot4xb-tool/modules/docconf"
-	"github.com/pablo-botella/ot4xb-tool/modules/docdb"
-	"github.com/pablo-botella/ot4xb-tool/modules/docgen"
-	"github.com/pablo-botella/ot4xb-tool/modules/docresolve"
-	"github.com/pablo-botella/ot4xb-tool/modules/srcdoc"
-	"github.com/pablo-botella/ot4xb-tool/modules/srcsplit"
+	"github.com/pablo-botella/ot4xb-tool/modules/doctool"
+	"github.com/pablo-botella/ot4xb-tool/modules/doctool/compile"
+	"github.com/pablo-botella/ot4xb-tool/modules/doctool/docdb"
+	"github.com/pablo-botella/ot4xb-tool/modules/doctool/gen"
+	"github.com/pablo-botella/ot4xb-tool/modules/doctool/resolve"
+	"github.com/pablo-botella/ot4xb-tool/modules/doctool/scan"
+	"github.com/pablo-botella/ot4xb-tool/modules/doctool/split"
 )
 
 // stepSrcsplit runs srcsplit over "in" (a file, a glob or a directory) writing
@@ -59,7 +59,7 @@ func (t *Tool) srcsplitJob(e *entry, cfg json.RawMessage, o Options) error {
 	if err != nil {
 		return err
 	}
-	opt := srcsplit.Options{Force: c.Force, Bak: c.Bak, Warn: func(m string) { o.Warn("srcsplit: " + m) }}
+	opt := split.Options{Force: c.Force, Bak: c.Bak, Warn: func(m string) { o.Warn("srcsplit: " + m) }}
 	if c.Code != "" {
 		if opt.Code, err = t.expandPath(e, c.Code); err != nil {
 			return err
@@ -70,7 +70,7 @@ func (t *Tool) srcsplitJob(e *entry, cfg json.RawMessage, o Options) error {
 			return err
 		}
 	}
-	res, err := srcsplit.Run(in, opt)
+	res, err := split.Run(in, opt)
 	if err != nil {
 		return err
 	}
@@ -107,20 +107,20 @@ func (t *Tool) stepDocs(e *entry, cfg json.RawMessage, o Options) error {
 	if c.Out == "" {
 		return fmt.Errorf("docs: \"out\" is required")
 	}
-	conf := docconf.Default()
+	conf := doctool.Default()
 	var err error
 	if c.DocTool != "" {
 		p, err := t.expandPath(e, c.DocTool)
 		if err != nil {
 			return err
 		}
-		if conf, err = docconf.Load(p); err != nil {
+		if conf, err = doctool.Load(p); err != nil {
 			return err
 		}
 	} else if c.DB == "" || len(c.Src) == 0 {
 		return fmt.Errorf("docs: \"db\" and \"src\" are required without \"doc_tool\"")
 	}
-	srcdoc.Use(conf.KindTable())
+	scan.Use(conf.KindTable())
 	root := t.Dir
 	if c.DocTool != "" {
 		root = conf.Dir
@@ -175,11 +175,11 @@ func (t *Tool) stepDocs(e *entry, cfg json.RawMessage, o Options) error {
 	if err := os.MkdirAll(filepath.Dir(db), 0o755); err != nil {
 		return err
 	}
-	files, err := doccompile.ExpandSources(srcs, func(m string) { o.Warn("docs: " + m) })
+	files, err := compile.ExpandSources(srcs, func(m string) { o.Warn("docs: " + m) })
 	if err != nil {
 		return err
 	}
-	n, err := doccompile.Compile(db, root, files, nil)
+	n, err := compile.Compile(db, root, files, nil)
 	if err != nil {
 		return err
 	}
@@ -187,7 +187,7 @@ func (t *Tool) stepDocs(e *entry, cfg json.RawMessage, o Options) error {
 	if err != nil {
 		return err
 	}
-	rep, err := docresolve.Resolve(h, conf)
+	rep, err := resolve.Resolve(h, conf)
 	if err != nil {
 		h.Close()
 		return err
@@ -205,7 +205,7 @@ func (t *Tool) stepDocs(e *entry, cfg json.RawMessage, o Options) error {
 	for _, is := range issues {
 		o.Warn("docs: " + is)
 	}
-	pages, err := docgen.Generate(db, out, conf, func(m string) { o.Warn("docs: " + m) })
+	pages, err := gen.Generate(db, out, conf, func(m string) { o.Warn("docs: " + m) })
 	if err != nil {
 		return err
 	}

@@ -28,18 +28,18 @@ go get github.com/pablo-botella/ot4xb-tool    # library
 | `xbmac2h` | from a `.xbmac` registration list, the export/function-list headers and the two `.def` files |
 | `def2lib20` | an x86 COFF import library (`.lib`, long format, ALINK compatible) from a `.def` |
 | `cbk2obj` | an Xbase++ callback script (`.cbk`) compiled into a linkable x86 COFF object (`.obj`) |
-| `scandoc` | scan sources for `/*{{ }}*/` documentation markers (Draft 4): list the topics and the issues |
-| `srcsplit` | split an authoring source into its code projection (no doc blocks) and its doc projection |
-| `doccheck` | cross-check the documented surface against the `.xbmac` registration list |
-| `compile` | compile documented sources into the intermediate SQLite database (any number of passes) |
-| `resolve` | the a-posteriori step over that database: broken references, include cycles, slug clashes; then the pages with their logical location, materialized for the generators |
-| `gendoc` | the reference Markdown from that database: one file per topic or topic group (slugs) plus an index |
-| `gensite` | a static HTML site from that database, as a `.site-def` describes it (templates, assets); not a build step |
+| `doc scan` | scan sources for `/*{{ }}*/` documentation markers (Draft 4): list the topics and the issues |
+| `doc split` | split an authoring source into its code projection (no doc blocks) and its doc projection |
+| `doc check` | cross-check the documented surface against the `.xbmac` registration list |
+| `doc compile` | compile documented sources into the intermediate SQLite database (any number of passes) |
+| `doc resolve` | the a-posteriori step over that database: broken references, include cycles, slug clashes; then the pages with their logical location, materialized for the generators |
+| `doc gen` | the reference Markdown from that database: one file per topic or topic group (slugs) plus an index |
+| `doc site` | a static HTML site from that database, as a `.site-def` describes it (templates, assets); not a build step |
 
 The build-side commands (`-bs`, `vbuild`, `xbmac2h`, `def2lib20`, `cbk2obj`)
 replace the legacy Harbour/xppcbk tools of the ot4xb build, byte-compatible
-where the old outputs are consumed by other tools. The documentation commands
-(`scandoc`, `srcsplit`, `doccheck`, `compile`, `resolve`) form a pipeline: the
+where the old outputs are consumed by other tools. The documentation subcommands
+(`doc scan`, `doc split`, `doc check`, `doc compile`, `doc resolve`) form a pipeline: the
 sources are the only truth, the database is an intermediate build artifact
 like an `.obj`, and every product is generated from it afterwards.
 
@@ -419,7 +419,7 @@ parses those markers (the Draft 4 authoring model of the spec) and reports
 what is wrong, without ever touching a source:
 
 ```
-ot4xb-tool [-q] scandoc [-doctool <file>] -src <file|dir> [-fields] [-issues]
+ot4xb-tool [-q] doc scan [-doctool <file>] -src <file|dir> [-fields] [-issues]
 ```
 
 | option | meaning |
@@ -543,7 +543,7 @@ documented ones are always in the repository) and the *doc* one (only the
 doc blocks, verbatim, in order):
 
 ```
-ot4xb-tool [-q] srcsplit -src <file|glob|dir> [-code <dst>] [-doc <dst>] [-bak | -force] [-check]
+ot4xb-tool [-q] doc split -src <file|glob|dir> [-code <dst>] [-doc <dst>] [-bak | -force] [-check]
 ```
 
 | option | meaning |
@@ -680,14 +680,55 @@ points at the file: `<name>` macros resolve against `folders`, paths are
 relative to the file, and `src` is the ordered list of patterns (see the
 `docs` step). The step's own `src`, `db` and `root` keys, when given, win.
 
+### What the project declares, what the machine does
+
+The file splits in two along one line, and each half has somewhere else to be.
+
+| members | whose they are | where they also live |
+|---|---|---|
+| `books`, `index`, `kinds` | the project: what the documentation **is** | written into the database by `compile`, in its `cfg` table |
+| `folders`, `src`, `db` | the machine that collects: where the files **are** | the `.user` companion below |
+
+The first half travels inside the database, so whoever generates from it needs
+no `.doc-tool` of their own: a repository holding only the `.db` runs
+`resolve`, `gendoc` and `gensite` as they are, and a repository that keeps a
+`.doc-tool` for its local paths leaves `books`, `index` and `kinds` out of it -
+every block the file does not declare comes from the database. What the file
+declares wins over what the database offers; with neither, the built-in
+configuration applies. The second half never travels: a `db` inside the
+database would point at itself, and `src` and `folders` name files the
+consumer does not have.
+
+### The `.user` companion
+
+Next to `<project>.doc-tool`, an optional `<project>.doc-tool.user` holds the
+same members and replaces the ones it declares - whole, not merged: a
+`folders` in the `.user` **is** the folder map, not an addition to it. It is
+personal and never tracked (add it to `.gitignore`), and both files live in
+the same folder, so a relative path means the same thing in either.
+
+It exists for the half above that belongs to the machine. A `.doc-tool` that
+declares `"db": "../site/ot4xb.db"` is carrying one developer's disk layout
+into a versioned file; moved to the `.user`, the repository publishes only
+what the project *is*, and where the database lands is a fact of each machine:
+
+```json
+{ "folders": { "out": "../../ot4xb-site/doc" } }
+```
+
+The two halves together are what makes a repository self-sufficient: the
+sources and the configuration of the documentation on one side, the generated
+database and the site on the other, and nothing in either that only means
+something on the machine that ran the build.
+
 ## `gensite` - the static HTML site
 
 Outside the build, from the same database `gendoc` reads:
 
 ```
-ot4xb-tool [-q] gensite -site <file.site-def> [-doctool <file>] [-db <file.db>] [-out <dir>] [-title <text>] [-templates <dir>] [-assets <dir>] [-gencss]
-ot4xb-tool [-q] gensite [-doctool <file>] -db <file.db> -out <dir> [-title <text>] [-templates <dir>] [-assets <dir>] [-gencss]
-ot4xb-tool gensite -export-templates <dir>
+ot4xb-tool [-q] doc site -site <file.site-def> [-doctool <file>] [-db <file.db>] [-out <dir>] [-title <text>] [-templates <dir>] [-assets <dir>] [-gencss]
+ot4xb-tool [-q] doc site [-doctool <file>] -db <file.db> -out <dir> [-title <text>] [-templates <dir>] [-assets <dir>] [-gencss]
+ot4xb-tool doc site -export-templates <dir>
 ```
 
 Every page of the documentation - topics, groups, the indexes and the
@@ -713,6 +754,8 @@ in its own JSON file, `<name>.site-def`, normally in the folder of the site
   "doc_tool": "../ot4xb.doc-tool",
   "db": "../out/ot4xb.db",
   "templates": "./templates",
+  "template_page": "doc-page.html",
+  "template_index": "doc-index.html",
   "assets": "./assets",
   "out": "./out",
   "title": "ot4xb Reference",
@@ -735,7 +778,11 @@ script at all. Without the key nothing is written.
 
 Paths are relative to the file. `doc_tool` and `db` locate the
 documentation (the flags of the same name override them); `templates` is
-the folder whose files replace the built-in templates; `assets` is a folder
+the folder whose files replace the built-in templates, and `template_page`
+and `template_index` name the files to take from it - without them the names
+are `page.html` and `index.html`, which lets a single folder hold the
+templates of one site only; a name given here and missing from the folder is
+an error, never a silent fall back to the built-in one; `assets` is a folder
 copied into `out` as it is, files and subfolders - a style sheet, a favicon,
 `robots.txt`, `_redirects` (the `static` folder of other generators);
 `out` is where the site goes (required); `title` is the header of every page
@@ -788,7 +835,7 @@ The `.xbmac` registration list is the Xbase++ surface of the DLL, and only
 that. `doccheck` cross-checks it against what the sources document:
 
 ```
-ot4xb-tool [-q] doccheck -src <dir> -xbmac <file.xbmac> [-full]
+ot4xb-tool [-q] doc check -src <dir> -xbmac <file.xbmac> [-full]
 ```
 
 It scans the directory like `scandoc`, parses the list like `xbmac2h`, and
@@ -820,8 +867,8 @@ single place every product (reference pages, lookups, changelogs) is
 generated from afterwards. The sources stay the only truth.
 
 ```
-ot4xb-tool [-q] compile [-doctool <file>] -root <projectdir> -db <file.db> -src <file|glob|dir> [-src …]
-ot4xb-tool [-q] resolve [-doctool <file>] -db <file.db>
+ot4xb-tool [-q] doc compile [-doctool <file>] -root <projectdir> -db <file.db> -src <file|glob|dir> [-src …]
+ot4xb-tool [-q] doc resolve [-doctool <file>] -db <file.db>
 ```
 
 ### `compile` — one pass per source
@@ -863,7 +910,8 @@ topics and records what is broken as issues (code `resolve/…`), then prints
 them as `file:line: error: message`. It then materializes the pages: the
 `pages` and `page_trail` tables (see below) get one row per final page with
 its logical location, computed from the books, indexes and sections of the
-`.doc-tool` — which is why `resolve` wants `-doctool`. The generators read
+configuration — which is why `resolve` needs one: from `-doctool`, or,
+failing that, from the database itself (see `cfg` below). The generators read
 them and refuse a database that has not been resolved. It is re-runnable: its own issues are
 dropped and recomputed every time.
 
@@ -890,7 +938,8 @@ scattered content and C++ overloads work.
 | `topic_category` | `idsrc`, `idtopic`, `category` | N:N — a topic belongs to one or more categories (`winapi/structures`) |
 | `pages` | `file`, `title`, `kind`, `book`, `short`, `keywords`, `categories`, `parent` | written by `resolve`: one row per final page (topic, group, index, category page) with its first book, its short description and keywords as plain text, and `parent`, the file of the last step of its trail |
 | `page_trail` | `file`, `pos`, `title`, `target` | written by `resolve`: the logical location of every page, step by step — general index, book index, section (`index-x.md#section`), category page |
-| `meta` | `key`, `value` | schema version (2), project data |
+| `cfg` | `k`, `v` | the part of the configuration that describes the documentation — `books`, `index`, `kinds` — one JSON document each, written by `compile` |
+| `meta` | `key`, `value` | schema version (3), project data |
 
 Every row carries `idsrc`, which is what makes "replace this file" a plain
 delete. A **topic** is the whole documented thing; a **segment** is one
@@ -913,6 +962,18 @@ is no categories table — a category exists because it is used, the list is
 `SELECT DISTINCT category FROM topic_category`, and the `/` in the path is
 the hierarchy.
 
+**The configuration travels with the data.** `compile` stores the `books`,
+`index` and `kinds` of the `.doc-tool` in `cfg`, right after it writes the
+sources: at that moment the configuration is loaded and validated, and from
+then on the database carries what generating needs. The rest of the file —
+`db`, `src`, `folders` — never travels: it names paths of the machine that
+compiled and means nothing anywhere else. So a repository holding only the
+`.db` runs `resolve`, `gendoc` and `gensite` with no `.doc-tool` at all, and
+one that keeps a `.doc-tool` for its own paths need not repeat the blocks in
+it: every block the file leaves out comes from `cfg`. What the file declares
+wins over what the database offers, and with neither the built-in
+configuration applies.
+
 The database is single-process by design: one connection, no concurrency;
 another process wanting the data works on its own copy. Reads are always
 materialized (`QueryAll`), never a live cursor. A database of another schema
@@ -927,7 +988,7 @@ overloads of a C++ function share one page. No other grouping: a folder with
 all the content, that is the point.
 
 ```
-ot4xb-tool [-q] gendoc [-doctool <file>] -db <file.db> -out <dir>
+ot4xb-tool [-q] doc gen [-doctool <file>] -db <file.db> -out <dir>
 ```
 
 Run it on a compiled and resolved database. The output is CRLF.

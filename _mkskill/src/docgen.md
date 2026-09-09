@@ -13,7 +13,7 @@ overloads of a C++ function share one page. No other grouping: a folder with
 all the content, that is the point.
 
 ```
-ot4xb-tool [-q] gendoc [-doctool <file>] -db <file.db> -out <dir>
+ot4xb-tool [-q] doc gen [-doctool <file>] -db <file.db> -out <dir>
 ```
 
 Run it on a compiled and resolved database. The output is CRLF.

@@ -12,7 +12,7 @@ parses those markers (the Draft 4 authoring model of the spec) and reports
 what is wrong, without ever touching a source:
 
 ```
-ot4xb-tool [-q] scandoc [-doctool <file>] -src <file|dir> [-fields] [-issues]
+ot4xb-tool [-q] doc scan [-doctool <file>] -src <file|dir> [-fields] [-issues]
 ```
 
 | option | meaning |

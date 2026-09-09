@@ -95,3 +95,44 @@ over the index files finds a function by what it does, not only by its name.
 points at the file: `<name>` macros resolve against `folders`, paths are
 relative to the file, and `src` is the ordered list of patterns (see the
 `docs` step). The step's own `src`, `db` and `root` keys, when given, win.
+
+### What the project declares, what the machine does
+
+The file splits in two along one line, and each half has somewhere else to be.
+
+| members | whose they are | where they also live |
+|---|---|---|
+| `books`, `index`, `kinds` | the project: what the documentation **is** | written into the database by `compile`, in its `cfg` table |
+| `folders`, `src`, `db` | the machine that collects: where the files **are** | the `.user` companion below |
+
+The first half travels inside the database, so whoever generates from it needs
+no `.doc-tool` of their own: a repository holding only the `.db` runs
+`resolve`, `gendoc` and `gensite` as they are, and a repository that keeps a
+`.doc-tool` for its local paths leaves `books`, `index` and `kinds` out of it -
+every block the file does not declare comes from the database. What the file
+declares wins over what the database offers; with neither, the built-in
+configuration applies. The second half never travels: a `db` inside the
+database would point at itself, and `src` and `folders` name files the
+consumer does not have.
+
+### The `.user` companion
+
+Next to `<project>.doc-tool`, an optional `<project>.doc-tool.user` holds the
+same members and replaces the ones it declares - whole, not merged: a
+`folders` in the `.user` **is** the folder map, not an addition to it. It is
+personal and never tracked (add it to `.gitignore`), and both files live in
+the same folder, so a relative path means the same thing in either.
+
+It exists for the half above that belongs to the machine. A `.doc-tool` that
+declares `"db": "../site/ot4xb.db"` is carrying one developer's disk layout
+into a versioned file; moved to the `.user`, the repository publishes only
+what the project *is*, and where the database lands is a fact of each machine:
+
+```json
+{ "folders": { "out": "../../ot4xb-site/doc" } }
+```
+
+The two halves together are what makes a repository self-sufficient: the
+sources and the configuration of the documentation on one side, the generated
+database and the site on the other, and nothing in either that only means
+something on the machine that ran the build.
