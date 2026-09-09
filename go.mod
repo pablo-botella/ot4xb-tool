@@ -19,3 +19,10 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
 )
+
+// Everything up to v0.0.7 is the tool before the documentation subtree: the
+// packages lived under modules/doc* and modules/sitedef, the CLI had its doc
+// commands at the top level, and the database carried no configuration of its
+// own. Nothing written against those paths compiles against v0.0.8, so they
+// are withdrawn instead of left as a trap.
+retract [v0.0.0, v0.0.7]
