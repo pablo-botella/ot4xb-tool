@@ -48,6 +48,7 @@ type Options struct {
 	PageTemplate  string
 	IndexTemplate string
 	Sitemap       *SitemapOptions // write a sitemap, nil = none
+	CleanURLs     bool            // links, sitemap and search index drop the .html
 	Keywords      []string        // the site's keywords, added to every page's after its own
 	Search        string          // JSON file with every page for a client-side search, "" = none
 	Log           func(string)
@@ -67,13 +68,13 @@ type searchEntry struct {
 
 // writeSearch writes the pages as JSON for a client-side search engine: the
 // index pages are left out, the text is the page body as plain text.
-func writeSearch(pages []gen.Page, outDir, name string, siteKw []string) error {
+func writeSearch(pages []gen.Page, outDir, name string, siteKw []string, clean bool) error {
 	var entries []searchEntry
 	for _, p := range pages {
 		if p.Kind == "index" {
 			continue
 		}
-		entries = append(entries, searchEntry{File: htmlName(p.File), Title: p.Title, Kind: p.Kind, Books: p.Books,
+		entries = append(entries, searchEntry{File: href(htmlName(p.File), clean), Title: p.Title, Kind: p.Kind, Books: p.Books,
 			Categories: p.Categories, Keywords: keywords(p.Keywords, siteKw), Short: p.Short, Text: textOf(p.Body)})
 	}
 	data, err := json.Marshal(entries)
@@ -162,31 +163,37 @@ type Crumb struct {
 
 // canonical builds the canonical URL of a page: base + file, the base alone
 // for the general index; with no base, the file as it is.
-func canonical(sm *SitemapOptions, file, index string) string {
+func canonical(sm *SitemapOptions, file, index string, clean bool) string {
 	if sm == nil || sm.Base == "" {
-		return file
+		return href(file, clean)
+	}
+	// the same normalising writeSitemap does: without it a base written
+	// without its final slash gives a good sitemap and a glued canonical
+	base := sm.Base
+	if !strings.HasSuffix(base, "/") {
+		base += "/"
 	}
 	if file == index {
-		return sm.Base
+		return base
 	}
-	return sm.Base + file
+	return base + link(file, clean)
 }
 
-func crumbs(in []gen.Crumb) []Crumb {
+func crumbs(in []gen.Crumb, clean bool) []Crumb {
 	var out []Crumb
 	for _, c := range in {
-		out = append(out, Crumb{Title: c.Title, File: htmlTarget(c.File)})
+		out = append(out, Crumb{Title: c.Title, File: htmlTarget(c.File, clean)})
 	}
 	return out
 }
 
 // htmlTarget is htmlName for a link target that may carry a fragment:
 // "index-xbase.md#functions" -> "index-xbase.html#functions".
-func htmlTarget(target string) string {
+func htmlTarget(target string, clean bool) string {
 	if file, anchor, ok := strings.Cut(target, "#"); ok {
-		return htmlName(file) + "#" + anchor
+		return href(htmlName(file), clean) + "#" + anchor
 	}
-	return htmlName(target)
+	return href(htmlName(target), clean)
 }
 
 // anchor is the id a heading gets: its text in lower case, every run of
@@ -236,7 +243,7 @@ type SitemapOptions struct {
 }
 
 // writeSitemap writes the sitemap of the pages into outDir.
-func writeSitemap(pages []gen.Page, outDir string, s *SitemapOptions) error {
+func writeSitemap(pages []gen.Page, outDir string, s *SitemapOptions, clean bool) error {
 	base := s.Base
 	if base == "" {
 		return fmt.Errorf("sitemap: no base URL")
@@ -252,7 +259,7 @@ func writeSitemap(pages []gen.Page, outDir string, s *SitemapOptions) error {
 	b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
 	b.WriteString("<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n")
 	for _, p := range pages {
-		b.WriteString("<url>\n<loc>" + html.EscapeString(base+htmlName(p.File)) + "</loc>\n")
+		b.WriteString("<url>\n<loc>" + html.EscapeString(base+link(htmlName(p.File), clean)) + "</loc>\n")
 		if s.ChangeFreq != "" {
 			b.WriteString("<changefreq>" + html.EscapeString(s.ChangeFreq) + "</changefreq>\n")
 		}
@@ -279,7 +286,7 @@ func Write(pages []gen.Page, outDir string, o Options) error {
 	if err != nil {
 		return err
 	}
-	r := &renderer{md: goldmark.New(
+	r := &renderer{clean: o.CleanURLs, md: goldmark.New(
 		goldmark.WithExtensions(extension.Table, extension.Strikethrough),
 		goldmark.WithRendererOptions(ghtml.WithUnsafe()),
 	)}
@@ -296,8 +303,8 @@ func Write(pages []gen.Page, outDir string, o Options) error {
 			return fmt.Errorf("%s: %w", p.File, err)
 		}
 		v := View{Site: o.Title, Title: p.Title, Kind: p.Kind, Books: p.Books, Categories: p.Categories,
-			Keywords: keywords(p.Keywords, o.Keywords), Short: p.Short, Source: p.Source, File: htmlName(p.File), Index: index, Canonical: canonical(o.Sitemap, htmlName(p.File), index),
-			Body: template.HTML(body), Trail: crumbs(p.Trail), Siblings: crumbs(p.Siblings)}
+			Keywords: keywords(p.Keywords, o.Keywords), Short: p.Short, Source: p.Source, File: htmlName(p.File), Index: href(index, o.CleanURLs), Canonical: canonical(o.Sitemap, htmlName(p.File), index, o.CleanURLs),
+			Body: template.HTML(body), Trail: crumbs(p.Trail, o.CleanURLs), Siblings: crumbs(p.Siblings, o.CleanURLs)}
 		name := "page"
 		if p.Kind == "index" {
 			name = "index"
@@ -311,12 +318,12 @@ func Write(pages []gen.Page, outDir string, o Options) error {
 		}
 	}
 	if o.Sitemap != nil {
-		if err := writeSitemap(pages, outDir, o.Sitemap); err != nil {
+		if err := writeSitemap(pages, outDir, o.Sitemap, o.CleanURLs); err != nil {
 			return err
 		}
 	}
 	if o.Search != "" {
-		if err := writeSearch(pages, outDir, o.Search, o.Keywords); err != nil {
+		if err := writeSearch(pages, outDir, o.Search, o.Keywords, o.CleanURLs); err != nil {
 			return err
 		}
 	}
@@ -347,11 +354,36 @@ func Write(pages []gen.Page, outDir string, o Options) error {
 
 func htmlName(md string) string { return strings.TrimSuffix(md, ".md") + ".html" }
 
+// link is what points at a rendered file. With clean URLs the extension goes
+// and the general index becomes the folder itself, because the hosts that want
+// this map /foo to foo.html and /dir/ to /dir/index.html - and answer a
+// redirect for the name with extension, which is the whole point of dropping
+// it. The file on disk keeps the extension either way.
+func link(file string, clean bool) string {
+	if !clean {
+		return file
+	}
+	if file == "index.html" {
+		return "" // the folder itself
+	}
+	return strings.TrimSuffix(file, ".html")
+}
+
+// href is link for a link written inside a page, where the folder cannot be
+// the empty string: an empty href means this same page.
+func href(file string, clean bool) string {
+	if s := link(file, clean); s != "" {
+		return s
+	}
+	return "./"
+}
+
 // ---------------------------------------------------------------- the tree
 
 // renderer turns a page tree into HTML, one tag per line.
 type renderer struct {
-	md goldmark.Markdown
+	md    goldmark.Markdown
+	clean bool // links drop the .html
 }
 
 // body renders the entries of a page. A label goes in front of the value's
@@ -406,7 +438,11 @@ func (r *renderer) block(b *strings.Builder, bl gen.Block) error {
 		if err := r.md.Convert([]byte(v.Text), &buf); err != nil {
 			return err
 		}
-		b.WriteString(strings.ReplaceAll(buf.String(), `.md"`, `.html"`))
+		ext := `.html"`
+		if r.clean {
+			ext = `"`
+		}
+		b.WriteString(strings.ReplaceAll(buf.String(), `.md"`, ext))
 	default:
 		return fmt.Errorf("unknown block %T", bl)
 	}
@@ -439,12 +475,7 @@ func (r *renderer) inlines(in []gen.Inline) string {
 		case *gen.Code:
 			b.WriteString("<code>" + html.EscapeString(v.Text) + "</code>")
 		case *gen.Link:
-			target := v.Target
-			if file, anchor, ok := strings.Cut(target, "#"); ok {
-				target = htmlName(file) + "#" + anchor
-			} else {
-				target = htmlName(target)
-			}
+			target := htmlTarget(v.Target, r.clean)
 			b.WriteString(`<a href="` + html.EscapeString(target) + `">` + html.EscapeString(v.Text) + "</a>")
 		case *gen.Call:
 			// left unresolved by the builder: shown as written

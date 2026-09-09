@@ -41,6 +41,7 @@ type Options struct {
 	Search        string // the JSON file written for a client-side search engine
 	Sitemap       string // base URL of the sitemap; overrides the one of the .site-def
 	GenCSS        bool   // write style.css into Out
+	CleanURLs     bool   // links, sitemap and search index drop the .html
 	Export        string // write the built-in templates here and, with no Out, stop
 
 	Log  func(string) // progress, one line at a time
@@ -84,6 +85,7 @@ func Run(o Options) error {
 		fill(&o.Title, def.Title)
 		fill(&o.Search, def.Search)
 		o.GenCSS = o.GenCSS || def.GenCSS
+		o.CleanURLs = o.CleanURLs || def.CleanURLs
 		keywords = def.Keywords
 		if def.Sitemap != nil {
 			sm = &html.SitemapOptions{Base: def.Sitemap.Base, File: def.Sitemap.File,
@@ -122,7 +124,8 @@ func Run(o Options) error {
 	}
 	return html.Write(pages, o.Out, html.Options{Title: o.Title, TemplatesDir: o.Templates,
 		PageTemplate: o.PageTemplate, IndexTemplate: o.IndexTemplate,
-		Assets: o.Assets, GenCSS: o.GenCSS, Sitemap: sm, Keywords: keywords, Search: o.Search, Log: log})
+		Assets: o.Assets, GenCSS: o.GenCSS, Sitemap: sm, Keywords: keywords, Search: o.Search,
+		CleanURLs: o.CleanURLs, Log: log})
 }
 
 // loadConfig opens the database only to read its configuration blocks: docgen

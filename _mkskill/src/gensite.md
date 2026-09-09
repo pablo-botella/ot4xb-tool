@@ -43,6 +43,7 @@ in its own JSON file, `<name>.site-def`, normally in the folder of the site
   "out": "./out",
   "title": "ot4xb Reference",
   "gencss": false,
+  "clean_urls": false,
   "keywords": ["ot4xb", "xbase"],
   "sitemap": { "base": "https://www.xbwin.com/ot4xb/doc/" }
 }
@@ -75,9 +76,19 @@ otherwise (default: false); `sitemap` asks for a sitemap (`-sitemap <base>`
 on the command line): `base` is the absolute URL the site is served from,
 its folder with the trailing slash (required), `file` the output name
 (default `sitemap.xml`), `changefreq` and `priority` optional fields of
-every `<url>`, `indexes` the priority of the index pages when it differs.
+every `<url>`, `indexes` the priority of the index pages when it differs; `clean_urls`
+drops the `.html` from every link, sitemap entry and search index entry
+(default: false).
 Every flag wins over the file, so the same `.site-def` can be written
 somewhere else with `-out`.
+
+`clean_urls` exists because a host that maps `/foo` to `foo.html` answers a
+redirect when asked for `/foo.html`, so every internal link pays a round trip
+before the page starts to load. The files on disk keep their extension either
+way: only what points at them changes, and the general index becomes its own
+folder - `./` inside a page, the base URL in the sitemap and the canonical.
+It is off by default because a site built with it cannot be read from the
+file system, nor served by anything that does not rewrite.
 
 The `.doc-tool` file describes the documentation and knows nothing about
 sites: the kinds, books and indexes `gensite` renders come from it (through

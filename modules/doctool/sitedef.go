@@ -68,6 +68,13 @@ type Site struct {
 	// sitemap.xml), changefreq and priority optional <url> fields, indexes the
 	// priority of the index pages when it differs.
 	Sitemap *Sitemap `json:"sitemap"`
+	// CleanURLs drops the .html from every link, sitemap entry and search
+	// index entry. The files on disk keep their extension; only what points
+	// at them changes, because hosts that map /foo to foo.html answer a
+	// redirect when asked for /foo.html, and every internal link pays it.
+	// It breaks reading the output from the file system, so it is off by
+	// default and only the sites served by such a host turn it on.
+	CleanURLs bool `json:"clean_urls"`
 }
 
 // Sitemap is the "sitemap" object of a .site-def.

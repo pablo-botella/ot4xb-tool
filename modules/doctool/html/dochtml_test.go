@@ -149,16 +149,122 @@ func TestTemplateNames(t *testing.T) {
 }
 
 // TestCanonical: the public URL when the site has a base, the folder itself
-// for the general index, the bare file when there is no base at all.
+// for the general index, the bare file when there is no base at all. With
+// clean URLs the extension goes from the URL and never from the file on disk.
 func TestCanonical(t *testing.T) {
 	sm := &SitemapOptions{Base: "https://www.xbwin.com/ot4xb/doc/"}
-	if got := canonical(sm, "tbinfile.html", "index.html"); got != "https://www.xbwin.com/ot4xb/doc/tbinfile.html" {
+	if got := canonical(sm, "tbinfile.html", "index.html", false); got != "https://www.xbwin.com/ot4xb/doc/tbinfile.html" {
 		t.Fatal(got)
 	}
-	if got := canonical(sm, "index.html", "index.html"); got != "https://www.xbwin.com/ot4xb/doc/" {
+	if got := canonical(sm, "index.html", "index.html", false); got != "https://www.xbwin.com/ot4xb/doc/" {
 		t.Fatal(got)
 	}
-	if got := canonical(nil, "index.html", "index.html"); got != "index.html" {
+	if got := canonical(nil, "index.html", "index.html", false); got != "index.html" {
+		t.Fatal(got)
+	}
+	if got := canonical(sm, "tbinfile.html", "index.html", true); got != "https://www.xbwin.com/ot4xb/doc/tbinfile" {
+		t.Fatal(got)
+	}
+	if got := canonical(sm, "index.html", "index.html", true); got != "https://www.xbwin.com/ot4xb/doc/" {
+		t.Fatal(got)
+	}
+	if got := canonical(nil, "index.html", "index.html", true); got != "./" {
+		t.Fatal(got)
+	}
+	// a base written without its final slash: writeSitemap adds it, so this
+	// must too, or the same .site-def gives a good sitemap and a glued
+	// canonical
+	nb := &SitemapOptions{Base: "https://x.test/doc"}
+	if got := canonical(nb, "tbinfile.html", "index.html", false); got != "https://x.test/doc/tbinfile.html" {
+		t.Fatal(got)
+	}
+	if got := canonical(nb, "index.html", "index.html", true); got != "https://x.test/doc/" {
+		t.Fatal(got)
+	}
+}
+
+// TestWriteCleanURLs renders the same pages with CleanURLs and checks every
+// place a name can leak: the body links, the zone-2 block rewritten by hand,
+// the index link, the canonical, the sitemap and the search index. The files
+// on disk must still be the .html ones.
+func TestWriteCleanURLs(t *testing.T) {
+	dir := t.TempDir()
+	pages := []gen.Page{
+		{File: "function-foo.md", Title: "Foo", Kind: "function", Short: "Does foo.",
+			Body: entries(t,
+				"", "# Foo",
+				"desc", "See [Bar](function-bar.md) and [classes](index-xbase.md#classes).",
+				"", "{{begin-md}}\n| a |\n|---|\n| [x](function-bar.md) |\n{{end-md}}")},
+		{File: "index.md", Title: "Index", Kind: "index", Body: entries(t, "", "# Index\n\n- [Foo](function-foo.md)")},
+	}
+	o := Options{Title: "T", CleanURLs: true, Search: "search.json",
+		Sitemap: &SitemapOptions{Base: "https://x.test/doc"}}
+	if err := Write(pages, dir, o); err != nil {
+		t.Fatal(err)
+	}
+	// the files keep their extension: only what points at them changes
+	for _, f := range []string{"function-foo.html", "index.html"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Fatalf("%s must still be written: %v", f, err)
+		}
+	}
+	page, _ := os.ReadFile(filepath.Join(dir, "function-foo.html"))
+	for _, want := range []string{
+		`<a href="function-bar">Bar</a>`,            // a plain link
+		`<a href="index-xbase#classes">classes</a>`, // one with a fragment
+		`<a href="function-bar">x</a>`,              // inside a zone-2 block
+		`rel="canonical" href="https://x.test/doc/function-foo"`,
+		`href="./"`, // back to the general index
+	} {
+		if !strings.Contains(string(page), want) {
+			t.Errorf("page lacks %q:\n%s", want, page)
+		}
+	}
+	if strings.Contains(string(page), ".html\"") {
+		t.Errorf("an .html leaked into the page:\n%s", page)
+	}
+	sm, _ := os.ReadFile(filepath.Join(dir, "sitemap.xml"))
+	for _, want := range []string{"<loc>https://x.test/doc/function-foo</loc>",
+		"<loc>https://x.test/doc/</loc>"} {
+		if !strings.Contains(string(sm), want) {
+			t.Errorf("sitemap lacks %q:\n%s", want, sm)
+		}
+	}
+	idx, _ := os.ReadFile(filepath.Join(dir, "search.json"))
+	if !strings.Contains(string(idx), `"file":"function-foo"`) {
+		t.Errorf("search index:\n%s", idx)
+	}
+}
+
+// TestCleanURLs: what points at a page loses the extension and the general
+// index becomes its own folder, which inside a page has to be written "./"
+// because an empty href means this same page. A fragment survives both.
+func TestCleanURLs(t *testing.T) {
+	cases := []struct {
+		file       string
+		clean      bool
+		link, href string
+	}{
+		{"tbinfile.html", false, "tbinfile.html", "tbinfile.html"},
+		{"tbinfile.html", true, "tbinfile", "tbinfile"},
+		{"index.html", false, "index.html", "index.html"},
+		{"index.html", true, "", "./"},
+	}
+	for _, c := range cases {
+		if got := link(c.file, c.clean); got != c.link {
+			t.Errorf("link(%q, %v) = %q, want %q", c.file, c.clean, got, c.link)
+		}
+		if got := href(c.file, c.clean); got != c.href {
+			t.Errorf("href(%q, %v) = %q, want %q", c.file, c.clean, got, c.href)
+		}
+	}
+	if got := htmlTarget("index-xbase.md#classes", true); got != "index-xbase#classes" {
+		t.Fatal(got)
+	}
+	if got := htmlTarget("index.md#top", true); got != "./#top" {
+		t.Fatal(got)
+	}
+	if got := htmlTarget("index-xbase.md#classes", false); got != "index-xbase.html#classes" {
 		t.Fatal(got)
 	}
 }
