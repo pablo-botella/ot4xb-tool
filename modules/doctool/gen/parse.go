@@ -59,15 +59,24 @@ func (*List) block()        {}
 func (*CodeBlock) block()   {}
 func (*RawMarkdown) block() {}
 
-// An Inline is one of *Text, *Strong, *Code, *Link, *Call.
+// An Inline is one of *Text, *Strong, *Code, *Link, *URL, *Call.
 type Inline interface{ inline() }
 
-// Link is "[text](target)": the generator writes them for the indexes, the
-// resolved {{ilink}} become them; Target is a page file (.md) and every
-// renderer swaps the extension for its own.
+// Link is a reference to a page of this documentation, made by the generator
+// itself: the indexes write them and a resolved {{ilink}} becomes one. Target
+// is the page file, and every output writes it its own way - .md in a
+// Markdown manual, .html, no extension with clean URLs.
 type Link struct {
 	Text   string
 	Target string
+}
+
+// URL is "[text](url)" as the author wrote it. A link is a link: every output
+// emits it exactly as written and nothing ever rewrites it. That is why a page
+// of this documentation is referenced with {{ilink}}, never with a bracket.
+type URL struct {
+	Text string
+	URL  string
 }
 
 // Text is plain text, every character literal.
@@ -90,6 +99,7 @@ func (*Text) inline()   {}
 func (*Strong) inline() {}
 func (*Code) inline()   {}
 func (*Link) inline()   {}
+func (*URL) inline()    {}
 func (*Call) inline()   {}
 
 // A ParseIssue is one thing the text does not say in the subset. Line is
@@ -324,7 +334,7 @@ func (p *textParser) inlines(line int, s string) []Inline {
 				continue
 			}
 			emit()
-			out = append(out, &Link{Text: s[i+1 : i+close], Target: s[i+close+2 : i+close+2+end]})
+			out = append(out, &URL{Text: s[i+1 : i+close], URL: s[i+close+2 : i+close+2+end]})
 			i += close + 2 + end + 1
 		case c == '{' && i+1 < len(s) && s[i+1] == '{':
 			end := strings.Index(s[i+2:], "}}")

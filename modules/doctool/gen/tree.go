@@ -241,17 +241,23 @@ func (m *model) buildIndex(name, body string) []Entry {
 	for _, is := range issues {
 		m.issues = append(m.issues, Issue{Src: name, Line: 0, At: is.Line, Msg: is.Msg})
 	}
-	unwrapLinks(blocks)
+	indexLinks(blocks)
 	return []Entry{{Blocks: blocks}}
 }
 
-// unwrapLinks removes the code span mdIdent puts around a link text for the
-// Markdown output (`_name_`): in the tree the name is plain text, and the
-// renderer shows it as it is.
-func unwrapLinks(blocks []Block) {
+// indexLinks fixes the links of an index body, which the generator wrote
+// itself as Markdown: every bracket there is a page reference, so it becomes
+// a Link (the parser makes a URL of a bracket, as it must for an author's);
+// and the code span mdIdent puts around a link text for the Markdown output
+// (`_name_`) goes, because in the tree the name is plain text.
+func indexLinks(blocks []Block) {
 	var fix func(in []Inline)
 	fix = func(in []Inline) {
-		for _, i := range in {
+		for k, i := range in {
+			if u, ok := i.(*URL); ok {
+				i = &Link{Text: u.Text, Target: u.URL}
+				in[k] = i
+			}
 			if l, ok := i.(*Link); ok && len(l.Text) > 2 && l.Text[0] == '`' && l.Text[len(l.Text)-1] == '`' {
 				l.Text = l.Text[1 : len(l.Text)-1]
 			}

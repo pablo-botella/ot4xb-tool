@@ -517,8 +517,12 @@ XB_END_STRUCTURE
   renders as written, in written order.
 - **Links**: `{{ilink: <kind ident> text}}`, `{{ilink: <slug name> text}}`,
   `{{ilink: <tg name> text}}` inside any value; the kind is exact (a
-  `function` and a `c-function` of the same name are two topics). Markdown
-  links stay for external URLs.
+  `function` and a `c-function` of the same name are two topics). An `ilink`
+  is a reference: `resolve` finds the page and every output writes it its own
+  way - `.md` in a Markdown manual, `.html`, no extension with clean URLs. A
+  Markdown link `[text](url)` is a link: it comes out exactly as written, in
+  every output, and nothing rewrites it - so it is for URLs, never for a page
+  of this documentation.
 - **Scattered content**: a later block with the same identity — same file or
   another — adds its content to the same topic, in parse order. It carries
   the identity and the new content only; nothing already written is repeated.

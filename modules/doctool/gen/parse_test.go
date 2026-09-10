@@ -45,6 +45,8 @@ func dumpInlines(in []Inline) string {
 			fmt.Fprintf(&b, "<c>%s</c>", v.Text)
 		case *Link:
 			fmt.Fprintf(&b, "<a %s>%s</a>", v.Target, v.Text)
+		case *URL:
+			fmt.Fprintf(&b, "<url %s>%s</url>", v.URL, v.Text)
 		case *Call:
 			fmt.Fprintf(&b, "<call %s|%s>", v.Name, v.Arg)
 		}
@@ -65,7 +67,9 @@ func TestParseText(t *testing.T) {
 		{"each '~' is replaced, ~7 digits, ~nBits", "p:each '~' is replaced, ~7 digits, ~nBits\n"},
 		{"see {{ilink: <function foo> foo}} now", "p:see <call ilink|<function foo> foo> now\n"},
 		{"{{include-note-id: x}}", "p:<call include-note-id|x>\n"},
-		{"- [Foo](function-foo.md) - does foo\n- [Bar](b.md#x)", "li:<a function-foo.md>Foo</a> - does foo\nli:<a b.md#x>Bar</a>\n"},
+		// a bracket is the author's: a URL, never a page reference
+		{"- [Foo](function-foo.md) - does foo\n- [Bar](b.md#x)", "li:<url function-foo.md>Foo</url> - does foo\nli:<url b.md#x>Bar</url>\n"},
+		{"[MS](https://x.test/p.html) and [mail](mailto:pb@x.test)", "p:<url https://x.test/p.html>MS</url> and <url mailto:pb@x.test>mail</url>\n"},
 		{"an array [1,2] and a [bracket] alone", "p:an array [1,2] and a [bracket] alone\n"},
 		// zone 2
 		{"before\n{{begin-md}}\n| a | b |\n|---|---|\n{{end-md}}\nafter", "p:before\nmd:\"| a | b |\\n|---|---|\"\np:after\n"},
@@ -90,7 +94,7 @@ func TestParseText(t *testing.T) {
 func TestParseTextNest(t *testing.T) {
 	in := "- [Book](b.md)\n  - [Index](i.md)\n  - [Sec](s.md)\n    wrapped\n- [Other](o.md)\n"
 	got, issues := parseText(in, true)
-	want := "li:<a b.md>Book</a>\n  li:<a i.md>Index</a>\n  li:<a s.md>Sec</a> wrapped\nli:<a o.md>Other</a>\n"
+	want := "li:<url b.md>Book</url>\n  li:<url i.md>Index</url>\n  li:<url s.md>Sec</url> wrapped\nli:<url o.md>Other</url>\n"
 	if d := dump(got); d != want || len(issues) != 0 {
 		t.Errorf("nest:\n got %q\nwant %q\nissues %v", d, want, issues)
 	}

@@ -226,6 +226,8 @@ func plain(in []gen.Inline) string {
 			b.WriteString(v.Text)
 		case *gen.Link:
 			b.WriteString(v.Text)
+		case *gen.URL:
+			b.WriteString(v.Text)
 		}
 	}
 	return b.String()
@@ -432,17 +434,13 @@ func (r *renderer) block(b *strings.Builder, bl gen.Block) error {
 		}
 		b.WriteString(html.EscapeString(v.Text) + "</code></pre>\n")
 	case *gen.RawMarkdown:
-		// zone 2: goldmark over this block alone; its links to .md pages
-		// point to the .html ones
+		// zone 2: goldmark over this block alone, and its output as it is: a
+		// link written there is a link
 		var buf bytes.Buffer
 		if err := r.md.Convert([]byte(v.Text), &buf); err != nil {
 			return err
 		}
-		ext := `.html"`
-		if r.clean {
-			ext = `"`
-		}
-		b.WriteString(strings.ReplaceAll(buf.String(), `.md"`, ext))
+		b.WriteString(buf.String())
 	default:
 		return fmt.Errorf("unknown block %T", bl)
 	}
@@ -477,6 +475,9 @@ func (r *renderer) inlines(in []gen.Inline) string {
 		case *gen.Link:
 			target := htmlTarget(v.Target, r.clean)
 			b.WriteString(`<a href="` + html.EscapeString(target) + `">` + html.EscapeString(v.Text) + "</a>")
+		case *gen.URL:
+			// a link is a link: as the author wrote it, only escaped
+			b.WriteString(`<a href="` + html.EscapeString(v.URL) + `">` + html.EscapeString(v.Text) + "</a>")
 		case *gen.Call:
 			// left unresolved by the builder: shown as written
 			b.WriteString(html.EscapeString("{{" + v.Name + ": " + v.Arg + "}}"))

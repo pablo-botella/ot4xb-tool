@@ -42,10 +42,10 @@ func TestWrite(t *testing.T) {
 	for _, want := range []string{
 		"<title>Foo - Test site</title>",
 		"<h1 id=\"foo\">Foo</h1>\n",
-		"<p><strong>desc:</strong> Does foo with _OT4XB_X_ and &lt;cMethod&gt; &amp; <code>char**</code>. See <a href=\"function-bar.html\">Bar</a>.</p>\n",
+		"<p><strong>desc:</strong> Does foo with _OT4XB_X_ and &lt;cMethod&gt; &amp; <code>char**</code>. See <a href=\"function-bar.md\">Bar</a>.</p>\n",
 		"<p><strong>params:</strong></p>\n<ul>\n<li><code>a</code> first</li>\n<li><code>b</code> second</li>\n</ul>\n",
 		"<p><strong>example:</strong></p>\n<pre><code class=\"language-xbase\">? &#34;&lt;hi&gt;&#34;</code></pre>\n",
-		"<table>", `<a href="function-bar.html">x</a>`,
+		"<table>", `<a href="function-bar.md">x</a>`,
 		"Categories: string", "Books: xbase", `name="keywords" content="foo, bar"`,
 		`name="description" content="Does foo."`, `rel="canonical" href="function-foo.html"`, `href="index.html"`,
 	} {
@@ -56,8 +56,11 @@ func TestWrite(t *testing.T) {
 	if strings.Contains(string(page), "<em>") {
 		t.Errorf("an <em> in the page:\n%s", page)
 	}
+	// this index body is written here as an author would, so its bracket is a
+	// link as written; the generator's own index links become page references
+	// in gen (indexLinks), which its pipeline test covers
 	idx, _ := os.ReadFile(filepath.Join(dir, "index.html"))
-	if !strings.Contains(string(idx), `<li><a href="function-foo.html">Foo</a></li>`) {
+	if !strings.Contains(string(idx), `<li><a href="function-foo.md">Foo</a></li>`) {
 		t.Errorf("index:\n%s", idx)
 	}
 	// only the pages are written
@@ -193,7 +196,7 @@ func TestWriteCleanURLs(t *testing.T) {
 		{File: "function-foo.md", Title: "Foo", Kind: "function", Short: "Does foo.",
 			Body: entries(t,
 				"", "# Foo",
-				"desc", "See [Bar](function-bar.md) and [classes](index-xbase.md#classes).",
+				"desc", "See [Bar](function-bar.md), [classes](index-xbase.md#classes), [MS](https://x.test/p.html), [mail](mailto:pb@x.test) and [readme](https://github.com/x/README.md).",
 				"", "{{begin-md}}\n| a |\n|---|\n| [x](function-bar.md) |\n{{end-md}}")},
 		{File: "index.md", Title: "Index", Kind: "index", Body: entries(t, "", "# Index\n\n- [Foo](function-foo.md)")},
 	}
@@ -210,9 +213,13 @@ func TestWriteCleanURLs(t *testing.T) {
 	}
 	page, _ := os.ReadFile(filepath.Join(dir, "function-foo.html"))
 	for _, want := range []string{
-		`<a href="function-bar">Bar</a>`,            // a plain link
-		`<a href="index-xbase#classes">classes</a>`, // one with a fragment
-		`<a href="function-bar">x</a>`,              // inside a zone-2 block
+		`<a href="function-bar.md">Bar</a>`,            // a plain link
+		`<a href="index-xbase.md#classes">classes</a>`, // one with a fragment
+		`<a href="function-bar.md">x</a>`,              // inside a zone-2 block
+		// a bracket is a link: as written, whatever it points at, even with clean URLs
+		`<a href="https://x.test/p.html">MS</a>`,
+		`<a href="mailto:pb@x.test">mail</a>`,
+		`<a href="https://github.com/x/README.md">readme</a>`,
 		`rel="canonical" href="https://x.test/doc/function-foo"`,
 		`href="./"`, // back to the general index
 	} {
@@ -220,8 +227,11 @@ func TestWriteCleanURLs(t *testing.T) {
 			t.Errorf("page lacks %q:\n%s", want, page)
 		}
 	}
-	if strings.Contains(string(page), ".html\"") {
-		t.Errorf("an .html leaked into the page:\n%s", page)
+	// the generator's own names carry no extension; the author's links are not its business
+	for _, leak := range []string{`href="index.html"`, `href="function-foo.html"`, `href="./index"`} {
+		if strings.Contains(string(page), leak) {
+			t.Errorf("%s leaked into the page:\n%s", leak, page)
+		}
 	}
 	sm, _ := os.ReadFile(filepath.Join(dir, "sitemap.xml"))
 	for _, want := range []string{"<loc>https://x.test/doc/function-foo</loc>",
