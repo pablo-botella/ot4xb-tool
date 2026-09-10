@@ -1,9 +1,9 @@
 <mkskill>
   <version-spec params="major:byte,minor:[0-99],build:word">
-    <version major="0" minor="1" build="3" lock="major">
-      <ts>2026-09-10T16:45:16Z</ts>
+    <version major="0" minor="1" build="4" lock="major">
+      <ts>2026-09-10T18:50:47Z</ts>
     </version>
-    <label key="title" volatile="true" default-to-ts="true">2026-09-10T16:45:16Z</label>
+    <label key="title" volatile="true" default-to-ts="true">2026-09-10T18:50:47Z</label>
     <create file="__publish.bat" git-ignore="true" eol="crlf">
 @echo off
 set TAG={$$$ version $$$}
@@ -25,6 +25,7 @@ exit /b 1
     </meta>
   </project>
   <version-history max="10">
+    <release version="v0.1.4" ts="2026-09-10T18:50:47Z" title="2026-09-10T18:50:47Z" method="vinc-build"></release>
     <release version="v0.1.3" ts="2026-09-10T16:45:16Z" title="2026-09-10T16:45:16Z" method="vinc-build"></release>
     <release version="v0.1.2" ts="2026-09-10T14:29:34Z" title="2026-09-10T14:29:34Z" method="vinc-build"></release>
     <release version="v0.1.1" ts="2026-09-09T16:59:38Z" title="2026-09-09T16:59:38Z" method="vinc-build"></release>
@@ -34,6 +35,5 @@ exit /b 1
     <release version="v0.0.7" ts="2026-09-09T08:34:25Z" title="2026-09-09T08:34:25Z" method="vinc-build"></release>
     <release version="v0.0.6" ts="2026-09-09T08:08:22Z" title="2026-09-09T08:08:22Z" method="vinc-build"></release>
     <release version="v0.0.5" ts="2026-09-08T10:36:06Z" title="2026-09-08T10:36:06Z" method="vinc-build"></release>
-    <release version="v0.0.4" ts="2026-09-08T10:28:01Z" title="2026-09-08T10:28:01Z" method="vinc-build"></release>
   </version-history>
 </mkskill>

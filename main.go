@@ -7,7 +7,7 @@
 //	ot4xb-tool [-q] def2lib20 [-monkey] [-o out.lib] [-dll name.dll] [-prefix _] [-ts seconds] file.def
 //	ot4xb-tool [-q] cbk2obj [-asm] [-o out.obj] [-ts seconds] file.cbk
 //	ot4xb-tool [-q] doc scan -src path [-fields] [-tags] [-tagsout file]
-//	ot4xb-tool [-q] doc split -src path|glob [-code dst] [-doc dst] [-bak|-force] [-check]
+//	ot4xb-tool [-q] doc split -src path|glob [-code dst] [-doc dst] [-bak|-force] [-check] [-recurse]
 //	ot4xb-tool [-q] doc check -src dir -xbmac file.xbmac [-full]
 //	ot4xb-tool [-q] doc compile -root dir -db file.db -src path|glob|dir [-src ...]
 //	ot4xb-tool [-q] doc resolve -db file.db
@@ -553,8 +553,9 @@ func runScandoc(args []string) error {
 }
 
 func srcsplitUsage() {
-	fmt.Fprintln(os.Stderr, "usage: ot4xb-tool [-q] doc split -src path|glob [-code dst] [-doc dst] [-bak|-force] [-check]")
+	fmt.Fprintln(os.Stderr, "usage: ot4xb-tool [-q] doc split -src path|glob [-code dst] [-doc dst] [-bak|-force] [-check] [-recurse]")
 	fmt.Fprintln(os.Stderr, "  -src path   a source file, a folder of them, or a glob mask (folder/mask)")
+	fmt.Fprintln(os.Stderr, "  -recurse    a folder -src walks its subfolders; '*' in dst is then the path under the folder")
 	fmt.Fprintln(os.Stderr, "  -code dst   write the code projection (the source without its /*{{ }}*/ doc blocks) to dst")
 	fmt.Fprintln(os.Stderr, "  -doc dst    write the doc projection (only the /*{{ }}*/ blocks, verbatim) to dst")
 	fmt.Fprintln(os.Stderr, "              dst may hold a '*' = the source name without extension (ch/*.ch); no '*' = one file,")
@@ -829,9 +830,11 @@ func runDoccheck(args []string) error {
 func runSrcsplit(args []string) error {
 	// Hand-parsed like scandoc: one syntax only, -name value.
 	var src, code, doc string
-	var bak, force, check bool
+	var bak, force, check, recurse bool
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "-recurse":
+			recurse = true
 		case "-src":
 			if i+1 >= len(args) {
 				return fmt.Errorf("-src needs a path")
@@ -873,12 +876,13 @@ func runSrcsplit(args []string) error {
 		return fmt.Errorf("give -code and/or -doc")
 	}
 	res, err := split.Run(src, split.Options{
-		Code:  code,
-		Doc:   doc,
-		Bak:   bak,
-		Force: force,
-		Check: check,
-		Warn:  func(m string) { fmt.Fprintln(os.Stderr, "srcsplit: warning:", m) },
+		Code:    code,
+		Doc:     doc,
+		Bak:     bak,
+		Force:   force,
+		Check:   check,
+		Recurse: recurse,
+		Warn:    func(m string) { fmt.Fprintln(os.Stderr, "srcsplit: warning:", m) },
 	})
 	if err != nil {
 		return err

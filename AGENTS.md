@@ -92,7 +92,7 @@ keys, in this fixed order:
 | `xbmac2h` | `xbmac2h` on the given `.xbmac` |
 | `def2lib20` | `def2lib20` on the given `.def` |
 | `artefacts` | the artefacts module (release file layout); a content item with `"clean_doc_comments": true` packs the clean projection of every source carrying `/*{{ }}*/` blocks (what `srcsplit -code` would write), so a release zip ships sources without the documentation; a content item with `"tree": "<folder>"` packs that folder's whole subtree under `out`, every file under its relative path, where `in` lands files flat |
-| `srcsplit` | `srcsplit` over `in` (file, glob or directory): the code projection to `code` and/or the doc projection to `doc` (`*` = the source base name); `force` overwrites, `bak` keeps a `.bak` |
+| `srcsplit` | `srcsplit` over `in` (file, glob or directory): the code projection to `code` and/or the doc projection to `doc` (`*` = the source base name, or its path under `in` with `"recurse": true`, which also walks the subfolders of a directory `in`); `force` overwrites, `bak` keeps a `.bak` |
 | `docs` | the documentation: with `doc_tool` (a `.doc-tool` file, see that section) the sources, database and kinds come from the file; otherwise `src` (a pattern or an ordered list of patterns - the list order is the document order, a file matched twice counts once, `*.*` is every file of a folder, a pattern matching nothing warns) and `db` are required and `root` (default: the tool dir) is the project root. The sources are compiled, resolved and rendered into `out`; `clean` (default true) removes the database and the output folder first; broken references are warnings, `strict` makes them an error |
 | *(composite)* | `cleanup.before` (delete files), then `xbmac2h`, then `copy` |
 
@@ -554,12 +554,13 @@ documented ones are always in the repository) and the *doc* one (only the
 doc blocks, verbatim, in order):
 
 ```
-ot4xb-tool [-q] doc split -src <file|glob|dir> [-code <dst>] [-doc <dst>] [-bak | -force] [-check]
+ot4xb-tool [-q] doc split -src <file|glob|dir> [-code <dst>] [-doc <dst>] [-bak | -force] [-check] [-recurse]
 ```
 
 | option | meaning |
 |---|---|
-| `-src` | one source, a glob (`ch/*.ch`), or a directory: its `.ch .prg .chsrc .c .cpp .h .hpp` |
+| `-src` | one source (whatever its extension), a glob (`ch/*.ch`, `source/*/*.prg`: what it matches, whatever the extension, one `*` per folder level), or a directory: its `.ch .prg .chsrc .c .cpp .h .hpp`, one level deep |
+| `-recurse` | a directory `-src` walks its subfolders too; a `*` in a destination is then the source's path under that directory, so the tree comes out mirrored (`-src source -code public/*.* -recurse` writes `public/cpu-count/cpu-count.prg`) instead of flattened |
 | `-code <dst>` | write the clean projection to `dst` |
 | `-doc <dst>` | write the doc projection to `dst` |
 | `-bak` | an existing, different destination is copied to `<dst>.bak` before being overwritten |

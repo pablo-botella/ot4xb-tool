@@ -14,12 +14,13 @@ documented ones are always in the repository) and the *doc* one (only the
 doc blocks, verbatim, in order):
 
 ```
-ot4xb-tool [-q] doc split -src <file|glob|dir> [-code <dst>] [-doc <dst>] [-bak | -force] [-check]
+ot4xb-tool [-q] doc split -src <file|glob|dir> [-code <dst>] [-doc <dst>] [-bak | -force] [-check] [-recurse]
 ```
 
 | option | meaning |
 |---|---|
-| `-src` | one source, a glob (`ch/*.ch`), or a directory: its `.ch .prg .chsrc .c .cpp .h .hpp` |
+| `-src` | one source (whatever its extension), a glob (`ch/*.ch`, `source/*/*.prg`: what it matches, whatever the extension, one `*` per folder level), or a directory: its `.ch .prg .chsrc .c .cpp .h .hpp`, one level deep |
+| `-recurse` | a directory `-src` walks its subfolders too; a `*` in a destination is then the source's path under that directory, so the tree comes out mirrored (`-src source -code public/*.* -recurse` writes `public/cpu-count/cpu-count.prg`) instead of flattened |
 | `-code <dst>` | write the clean projection to `dst` |
 | `-doc <dst>` | write the doc projection to `dst` |
 | `-bak` | an existing, different destination is copied to `<dst>.bak` before being overwritten |

@@ -40,11 +40,12 @@ func (t *Tool) stepSrcsplit(e *entry, cfg json.RawMessage, o Options) error {
 
 func (t *Tool) srcsplitJob(e *entry, cfg json.RawMessage, o Options) error {
 	var c struct {
-		In    string `json:"in"`
-		Code  string `json:"code"`
-		Doc   string `json:"doc"`
-		Force bool   `json:"force"`
-		Bak   bool   `json:"bak"`
+		In      string `json:"in"`
+		Code    string `json:"code"`
+		Doc     string `json:"doc"`
+		Force   bool   `json:"force"`
+		Bak     bool   `json:"bak"`
+		Recurse bool   `json:"recurse"`
 	}
 	if err := json.Unmarshal(cfg, &c); err != nil {
 		return err
@@ -59,7 +60,7 @@ func (t *Tool) srcsplitJob(e *entry, cfg json.RawMessage, o Options) error {
 	if err != nil {
 		return err
 	}
-	opt := split.Options{Force: c.Force, Bak: c.Bak, Warn: func(m string) { o.Warn("srcsplit: " + m) }}
+	opt := split.Options{Force: c.Force, Bak: c.Bak, Recurse: c.Recurse, Warn: func(m string) { o.Warn("srcsplit: " + m) }}
 	if c.Code != "" {
 		if opt.Code, err = t.expandPath(e, c.Code); err != nil {
 			return err

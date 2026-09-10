@@ -198,10 +198,10 @@ func TestEncodingDirective(t *testing.T) {
 }
 
 func TestExpandDstFullName(t *testing.T) {
-	if got := expandDst(filepath.Join("out", "clean", "*.*"), filepath.Join("src", "a.hpp")); got != filepath.Join("out", "clean", "a.hpp") {
+	if got := expandDst(filepath.Join("out", "clean", "*.*"), filepath.Join("src", "a.hpp"), ""); got != filepath.Join("out", "clean", "a.hpp") {
 		t.Fatalf("*.* -> %q", got)
 	}
-	if got := expandDst(filepath.Join("out", "*.ch"), filepath.Join("src", "x.chsrc")); got != filepath.Join("out", "x.ch") {
+	if got := expandDst(filepath.Join("out", "*.ch"), filepath.Join("src", "x.chsrc"), ""); got != filepath.Join("out", "x.ch") {
 		t.Fatalf("* -> %q", got)
 	}
 }
@@ -228,5 +228,74 @@ func TestCodeCaptureProjections(t *testing.T) {
 	want := crlf("/*{{begin-topic}}*/", "/*{{topic: d}}*/", "/*{{begin-code: xbase}}*/", "proc main", "return", "/*{{end-code}}*/", "/*{{end-topic}}*/")
 	if !bytes.Equal(ex, want) {
 		t.Fatalf("extract:\n got %q\nwant %q", ex, want)
+	}
+}
+
+// TestRecurse: a directory is one level deep unless Recurse, which walks the
+// tree and makes the '*' of a destination the path under the directory, so
+// two examples with the same file name do not collide; what is not a source
+// is left where it is.
+func TestRecurse(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "source")
+	files := map[string]string{
+		"a/main.prg": "/*{{begin-example}}*/\r\n/*{{example: a}}*/\r\n/*{{end-example}}*/\r\nproc main\r\nreturn\r\n",
+		"b/main.prg": "proc main\r\nreturn\r\n",
+		"b/sub/x.ch": "/*{{topic: x | desc: y }}*/\r\n#define X 1\r\n",
+		"b/main.xpj": "[PROJECT]\r\n",
+		"notes.txt":  "not a source\r\n",
+	}
+	for name, content := range files {
+		p := filepath.Join(src, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := filepath.Join(dir, "clean")
+	// without Recurse a directory is one level: nothing here
+	var warns []string
+	res, err := Run(src, Options{Code: filepath.Join(out, "*.*"), Warn: func(m string) { warns = append(warns, m) }})
+	if err != nil || len(res) != 0 || len(warns) != 1 {
+		t.Fatalf("one level: %v %v %v", res, err, warns)
+	}
+	// with it, the tree, mirrored
+	res, err = Run(src, Options{Code: filepath.Join(out, "*.*"), Recurse: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range res {
+		rel, _ := filepath.Rel(out, r.CodeDst)
+		got = append(got, filepath.ToSlash(rel))
+	}
+	if want := "a/main.prg|b/main.prg|b/sub/x.ch"; strings.Join(got, "|") != want {
+		t.Fatalf("destinations = %v", got)
+	}
+	if b, _ := os.ReadFile(filepath.Join(out, "a", "main.prg")); string(b) != "proc main\r\nreturn\r\n" {
+		t.Fatalf("a/main.prg not cleaned: %q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(out, "b", "sub", "x.ch")); string(b) != "#define X 1\r\n" {
+		t.Fatalf("b/sub/x.ch: %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(out, "notes.txt")); err == nil {
+		t.Fatal("notes.txt is not a source and must not be written")
+	}
+	// '*' alone is the relative path without extension
+	res, err = Run(src, Options{Code: filepath.Join(dir, "doc", "*.txt"), Recurse: true})
+	if err != nil || filepath.ToSlash(res[2].CodeDst) != filepath.ToSlash(filepath.Join(dir, "doc", "b", "sub", "x.txt")) {
+		t.Fatalf("star: %v %v", res, err)
+	}
+	// -check over the mirrored tree: nothing drifts after a write
+	res, err = Run(src, Options{Code: filepath.Join(out, "*.*"), Recurse: true, Check: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range res {
+		if r.CodeDrift {
+			t.Fatalf("drift right after writing: %+v", r)
+		}
 	}
 }

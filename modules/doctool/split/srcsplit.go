@@ -17,6 +17,7 @@ package split
 import (
 	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,7 +35,14 @@ type Options struct {
 	Bak   bool   // an existing, different destination is copied to <dst>.bak before being overwritten
 	Force bool   // an existing, different destination is overwritten with no copy
 	Check bool   // compare against the existing destinations and report drift instead of writing
-	Warn  func(string)
+	// Recurse makes a directory -src walk its subfolders; the '*' of a
+	// destination then stands for the source's path relative to that
+	// directory, so the tree comes out mirrored instead of flattened.
+	Recurse bool
+	// Rel is the folder the source paths are taken relative to when a '*' is
+	// expanded (Run sets it under Recurse; "" = the base name only).
+	Rel  string
+	Warn func(string)
 }
 
 // Result is what a run produced for one source file.
@@ -238,12 +246,17 @@ func Extract(src []byte) []byte {
 	return append(bytes.Join(kept, []byte("\r\n")), '\r', '\n')
 }
 
-// destPath builds <dir>/<base-without-.chsrc><ext>.
 // expandDst turns a destination pattern into the path for srcPath: every '*'
-// becomes the source's base name (no extension); a pattern without '*' is
-// returned as is.
-func expandDst(pattern, srcPath string) string {
+// becomes the source's base name (no extension), or its path relative to rel
+// when rel is given (a recursive run: the tree is mirrored, not flattened);
+// a pattern without '*' is returned as is.
+func expandDst(pattern, srcPath, rel string) string {
 	name := filepath.Base(srcPath)
+	if rel != "" {
+		if r, err := filepath.Rel(rel, srcPath); err == nil {
+			name = r
+		}
+	}
 	base := strings.TrimSuffix(name, filepath.Ext(name))
 	// "*.*" keeps the source's own extension (mixed sources into one folder)
 	pattern = strings.ReplaceAll(pattern, "*.*", name)
@@ -329,7 +342,7 @@ func SplitFile(srcPath string, o Options) (Result, error) {
 			return r, fmt.Errorf("%s -> code: %w", srcPath, err)
 		}
 		r.DocLines = n
-		r.CodeDst = expandDst(o.Code, srcPath)
+		r.CodeDst = expandDst(o.Code, srcPath, o.Rel)
 		if r.CodeDrift, r.CodeWrote, r.CodeBacked, err = writeOut(r.CodeDst, gen, o); err != nil {
 			return r, err
 		}
@@ -339,7 +352,7 @@ func SplitFile(srcPath string, o Options) (Result, error) {
 		if gen, err = to1252(gen); err != nil {
 			return r, fmt.Errorf("%s -> doc: %w", srcPath, err)
 		}
-		r.DocDst = expandDst(o.Doc, srcPath)
+		r.DocDst = expandDst(o.Doc, srcPath, o.Rel)
 		if r.DocDrift, r.DocWrote, r.DocBacked, err = writeOut(r.DocDst, gen, o); err != nil {
 			return r, err
 		}
@@ -347,11 +360,17 @@ func SplitFile(srcPath string, o Options) (Result, error) {
 	return r, nil
 }
 
-// Sources resolves an -in argument (a single .chsrc file, a directory of them,
-// or a glob mask like "ch/src/*.chsrc") to the list of .chsrc files.
-func Sources(in string) ([]string, error) {
+// Sources resolves an -in argument (a single source file, a directory of
+// them, or a glob mask like "ch/src/*.chsrc") to the list of source files.
+// A directory yields its sources - the authoring extensions - one level deep,
+// or its whole tree with recurse; a plain file goes whatever its extension;
+// a glob yields what it matches, whatever the extension.
+func Sources(in string, recurse bool) ([]string, error) {
 	if st, err := os.Stat(in); err == nil {
 		if st.IsDir() {
+			if recurse {
+				return walkDir(in)
+			}
 			return globDir(in)
 		}
 		return []string{in}, nil // a plain file, whatever its extension
@@ -370,7 +389,32 @@ func Sources(in string) ([]string, error) {
 	return out, nil
 }
 
-// globDir returns every *.chsrc in dir (not recursive).
+// isSource reports whether name carries one of the authoring extensions.
+func isSource(name string) bool {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".ch", ".prg", ".chsrc", ".c", ".cpp", ".h", ".hpp":
+		return true
+	}
+	return false
+}
+
+// walkDir returns every source under dir, subfolders included, in lexical
+// order (reproducible).
+func walkDir(dir string) ([]string, error) {
+	var out []string
+	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && isSource(d.Name()) {
+			out = append(out, p)
+		}
+		return nil
+	})
+	return out, err
+}
+
+// globDir returns every source in dir (not recursive).
 func globDir(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -378,11 +422,7 @@ func globDir(dir string) ([]string, error) {
 	}
 	var out []string
 	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		switch strings.ToLower(filepath.Ext(e.Name())) {
-		case ".ch", ".prg", ".chsrc", ".c", ".cpp", ".h", ".hpp": // the authoring sources
+		if !e.IsDir() && isSource(e.Name()) {
 			out = append(out, filepath.Join(dir, e.Name()))
 		}
 	}
@@ -394,9 +434,14 @@ func Run(in string, o Options) ([]Result, error) {
 	if o.Code == "" && o.Doc == "" {
 		return nil, fmt.Errorf("nothing to do: give -code and/or -doc")
 	}
-	srcs, err := Sources(in)
+	srcs, err := Sources(in, o.Recurse)
 	if err != nil {
 		return nil, err
+	}
+	if o.Recurse {
+		if st, err := os.Stat(in); err == nil && st.IsDir() {
+			o.Rel = in // the '*' of a destination is the path under in
+		}
 	}
 	if len(srcs) == 0 && o.Warn != nil {
 		o.Warn(fmt.Sprintf("no source files matched %q", in))
