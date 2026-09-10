@@ -205,3 +205,28 @@ func TestExpandDstFullName(t *testing.T) {
 		t.Fatalf("* -> %q", got)
 	}
 }
+
+// TestCodeCaptureProjections: the code between begin-code and end-code is
+// source, so Strip keeps it (and drops the two markers), and it is what the
+// pair documents, so Extract keeps it too.
+func TestCodeCaptureProjections(t *testing.T) {
+	src := crlf(
+		"/*{{begin-topic}}*/",
+		"/*{{topic: d}}*/",
+		"/*{{begin-code: xbase}}*/",
+		"proc main",
+		"return",
+		"/*{{end-code}}*/",
+		"/*{{end-topic}}*/",
+		"// not doc",
+	)
+	got, doc := Strip(src)
+	if want := crlf("proc main", "return", "// not doc"); !bytes.Equal(got, want) || doc != 5 {
+		t.Fatalf("strip (%d doc lines):\n got %q\nwant %q", doc, got, want)
+	}
+	ex := Extract(src)
+	want := crlf("/*{{begin-topic}}*/", "/*{{topic: d}}*/", "/*{{begin-code: xbase}}*/", "proc main", "return", "/*{{end-code}}*/", "/*{{end-topic}}*/")
+	if !bytes.Equal(ex, want) {
+		t.Fatalf("extract:\n got %q\nwant %q", ex, want)
+	}
+}

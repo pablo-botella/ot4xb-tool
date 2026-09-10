@@ -156,11 +156,13 @@ func isKind(name string) bool { return table.Has(name) }
 type MarkerKind int
 
 const (
-	MkBegin    MarkerKind = iota + 1 // begin-<kind>
-	MkEnd                            // end-<kind>
-	MkHeader                         // <kind>: ident ...
-	MkFragment                       // |label: ... or |: text
-	MkInclude                        // include-note-id: X (alone)
+	MkBegin     MarkerKind = iota + 1 // begin-<kind>
+	MkEnd                             // end-<kind>
+	MkHeader                          // <kind>: ident ...
+	MkFragment                        // |label: ... or |: text
+	MkInclude                         // include-note-id: X (alone)
+	MkCodeBegin                       // begin-code[: language]: the source lines up to end-code are a code block
+	MkCodeEnd                         // end-code
 )
 
 // Field is one "label: value" entry of a marker. Label is canonical (its
@@ -445,6 +447,18 @@ func canonLabel(l string) (label string, hideEntry, hideLabel bool) {
 func parseMarker(f *File, mk *Marker) {
 	text := mk.Raw
 	t := strings.TrimSpace(text)
+	// begin-code[: language] ... end-code: the source lines between the two
+	// are a code block of the open topic, shown as they are. Draft 4 could
+	// only show code copied into a marker; this shows the code itself.
+	if t == "end-code" {
+		mk.Kind = MkCodeEnd
+		return
+	}
+	if t == "begin-code" || strings.HasPrefix(t, "begin-code:") {
+		mk.Kind = MkCodeBegin
+		mk.Scope = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(t, "begin-code"), ":"))
+		return
+	}
 	if strings.HasPrefix(t, "begin-") {
 		mk.Kind = MkBegin
 		mk.Scope = strings.TrimSpace(strings.TrimPrefix(t, "begin-"))
@@ -523,8 +537,46 @@ func Scan(name string, data []byte) *File {
 	var scope *Topic // open composed topic (nil = top level)
 	var scopeKind string
 	var scopeLine int
+	var code *Marker // open begin-code (nil = none); its lines become a fragment of scope
+	// emitCode closes the capture at endLine (the end-code line, or past the
+	// last line): the source lines between the markers, verbatim, become one
+	// fragment with a hidden-label "code" field holding them as a fence, so
+	// that everything downstream sees an ordinary code block at that position.
+	emitCode := func(endLine int) {
+		var body []string
+		if endLine-1 > code.EndLine {
+			for _, l := range lines[code.EndLine : endLine-1] {
+				body = append(body, string(l))
+			}
+		}
+		value := "```" + code.Scope + "\n" + strings.Join(body, "\n") + "\n```"
+		scope.Markers = append(scope.Markers, &Marker{Kind: MkFragment, Line: code.Line, EndLine: endLine, Raw: value,
+			Fields: []Field{{Label: "code", HideLabel: true, Value: value, Line: code.Line}}})
+		code = nil
+	}
 	for _, mk := range markers {
+		if code != nil && mk.Kind != MkCodeEnd {
+			// nothing may be written inside a capture: it is code, not doc
+			f.issue(mk.Line, "error", "code-open", fmt.Sprintf("marker inside the begin-code opened at line %d: close it with end-code first", code.Line))
+			emitCode(mk.Line)
+		}
 		switch mk.Kind {
+		case MkCodeBegin:
+			if scope == nil {
+				if scopeKind != "" {
+					f.issue(mk.Line, "error", "content-before-header", fmt.Sprintf("begin-code before the header of the begin-%s scope (line %d)", scopeKind, scopeLine))
+				} else {
+					f.issue(mk.Line, "error", "content-outside-topic", "begin-code outside any topic: nothing to attach it to (a compact topic cannot hold one; use begin-<kind> ... end-<kind>)")
+				}
+				continue
+			}
+			code = mk
+		case MkCodeEnd:
+			if code == nil {
+				f.issue(mk.Line, "error", "stray-end", "end-code without a begin-code")
+				continue
+			}
+			emitCode(mk.Line)
 		case MkBegin:
 			if !isKind(mk.Scope) {
 				f.issue(mk.Line, "error", "unknown-kind", fmt.Sprintf("begin-%s: unknown topic kind", mk.Scope))
@@ -575,6 +627,10 @@ func Scan(name string, data []byte) *File {
 			}
 			scope.Markers = append(scope.Markers, mk)
 		}
+	}
+	if code != nil {
+		f.issue(code.Line, "error", "unclosed-code", "begin-code never closed with end-code")
+		emitCode(f.Lines + 1)
 	}
 	if scopeKind != "" {
 		f.issue(scopeLine, "error", "unclosed-scope", fmt.Sprintf("begin-%s never closed", scopeKind))

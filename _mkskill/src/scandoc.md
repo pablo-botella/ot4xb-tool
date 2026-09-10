@@ -99,6 +99,13 @@ XB_END_STRUCTURE
   `{{ilink: …}}` still work there, and the two marks themselves are not
   rendered. `{{begin-md: raw}}` keeps the text byte for byte instead: no
   dedent, nothing replaced — the way to indent on purpose.
+- **Code from the source**: `/*{{begin-code: xbase}}*/` ... `/*{{end-code}}*/`
+  inside a composed topic make the source lines between them a code block of
+  that topic, at that position, in the language named after the colon
+  (optional). Those lines are code, not documentation: `split` keeps them in
+  the clean source, and in the doc projection too, between the two markers.
+  No marker may appear inside, the pair does not nest, a second `end-code`
+  is an error, and a compact topic cannot hold one.
 - **Visibility** is in the label's first and last underscore: `desc_` shows
   the value without its label, `_todo` hides the whole entry, `_slug_` is
   hidden both ways but still a field the tool reads. Only the first and the

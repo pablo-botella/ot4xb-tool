@@ -206,6 +206,7 @@ func (t *Tool) stepArtefacts(e *entry, cfg json.RawMessage, o Options) error {
 		ZipFilename string `json:"zip_filename"`
 		Content     []struct {
 			In               []string `json:"in"`
+			Tree             string   `json:"tree"`
 			Out              string   `json:"out"`
 			CleanDocComments bool     `json:"clean_doc_comments"`
 		} `json:"content"`
@@ -234,7 +235,13 @@ func (t *Tool) stepArtefacts(e *entry, cfg json.RawMessage, o Options) error {
 				}
 				in = append(in, ep)
 			}
-			contents = append(contents, artefacts.Content{In: in, Out: c.Out, Clean: c.CleanDocComments})
+			tree := ""
+			if c.Tree != "" {
+				if tree, err = t.expandPath(e, c.Tree); err != nil {
+					return err
+				}
+			}
+			contents = append(contents, artefacts.Content{In: in, Tree: tree, Out: c.Out, Clean: c.CleanDocComments})
 		}
 		names, err := artefacts.Zip(zp, contents, artefacts.Options{
 			Warn: func(msg string) { o.Warn("artefacts: " + msg) },

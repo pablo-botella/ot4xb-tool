@@ -5,7 +5,10 @@
 // A zip artefact is described by the target file name and a list of content
 // items; each item has "in" (a list of file paths or glob patterns, wildcards
 // in the last path element) and "out" (the folder inside the zip, "/" for the
-// root). Matched files land flat in that folder under their base name.
+// root). Matched files land flat in that folder under their base name. An
+// item may instead name a "tree": a folder whose whole subtree goes under
+// "out" with the paths kept - the way to pack a project of many folders in
+// one item, and to have a folder added tomorrow packed without a word.
 //
 // Everything is Windows-minded: "/" and "\" are interchangeable, matching is
 // case-insensitive (*.h matches CRC32.HPP's sibling X.H, *.VersionInfo
@@ -17,6 +20,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -34,6 +38,10 @@ type Content struct {
 	In []string
 	// Out is the destination folder inside the zip: "/", "/include", ...
 	Out string
+	// Tree is a folder whose whole subtree goes under Out, every file under
+	// its path relative to the folder ("" = none). Where In flattens, Tree
+	// mirrors.
+	Tree string
 	// Clean packs the clean projection of every source that carries /*{{ }}*/
 	// documentation blocks (split.Code); files without them go as they are.
 	Clean bool
@@ -96,8 +104,9 @@ func Glob(pattern string) ([]string, error) {
 // Zip builds zipPath from the content items, creating the parent folders of
 // the zip when needed. It returns the archive-relative names written, in
 // order. Files are deflated; their modification times are kept. A pattern
-// matching nothing warns and contributes nothing; two files mapping to the
-// same name in the zip keep the first and warn about the rest.
+// matching nothing warns and contributes nothing, so does an empty tree; two
+// files mapping to the same name in the zip keep the first and warn about
+// the rest. A tree is walked in lexical order, so the output is reproducible.
 func Zip(zipPath string, contents []Content, o Options) ([]string, error) {
 	warn := o.Warn
 	if warn == nil {
@@ -133,6 +142,44 @@ func Zip(zipPath string, contents []Content, o Options) ([]string, error) {
 				}
 				seen[key] = m
 				entries = append(entries, entry{src: m, name: name, clean: c.Clean})
+			}
+		}
+		if c.Tree != "" {
+			root := filepath.Clean(filepath.FromSlash(c.Tree))
+			if st, err := os.Stat(root); err != nil || !st.IsDir() {
+				return nil, fmt.Errorf("artefacts: tree %s is not a folder", c.Tree)
+			}
+			n := 0
+			err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+				if d.IsDir() {
+					return nil
+				}
+				rel, err := filepath.Rel(root, p)
+				if err != nil {
+					return err
+				}
+				name := filepath.ToSlash(rel)
+				if folder != "" {
+					name = folder + "/" + name
+				}
+				key := strings.ToLower(name)
+				if prev, dup := seen[key]; dup {
+					warn(fmt.Sprintf("%s: duplicate zip entry %s (kept %s)", p, name, prev))
+					return nil
+				}
+				seen[key] = p
+				entries = append(entries, entry{src: p, name: name, clean: c.Clean})
+				n++
+				return nil
+			})
+			if err != nil {
+				return nil, err
+			}
+			if n == 0 {
+				warn(fmt.Sprintf("%s: no files in the tree", c.Tree))
 			}
 		}
 	}

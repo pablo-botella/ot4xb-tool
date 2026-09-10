@@ -199,10 +199,14 @@ func Code(src []byte) (out []byte, docLines int, err error) {
 }
 
 // Extract returns only the /*{{ ... }}*/ doc blocks of src (the .chdoc
-// projection), in order, each block kept verbatim. Non-doc lines are dropped.
+// projection), in order, each block kept verbatim. Non-doc lines are dropped,
+// except between begin-code and end-code: those source lines are what the
+// pair documents, so the projection keeps them or the code block would be
+// empty.
 func Extract(src []byte) []byte {
 	lines, _, _ := splitLines(src)
 	kept := make([][]byte, 0, len(lines))
+	code := false // inside begin-code ... end-code
 	for i := 0; i < len(lines); i++ {
 		if isDoc(lines[i]) {
 			_, isEnc := encodingMarker(lines[i]) // the encoding directive is not doc
@@ -217,6 +221,15 @@ func Extract(src []byte) []byte {
 			if !isEnc {
 				kept = append(kept, block...)
 			}
+			if len(block) > 0 {
+				if bytes.Contains(block[0], []byte("{{begin-code")) {
+					code = true
+				} else if bytes.Contains(block[0], []byte("{{end-code")) {
+					code = false
+				}
+			}
+		} else if code {
+			kept = append(kept, lines[i])
 		}
 	}
 	if len(kept) == 0 {

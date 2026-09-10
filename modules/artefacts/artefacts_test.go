@@ -176,3 +176,71 @@ func TestZipCleanDocComments(t *testing.T) {
 		t.Fatalf("b.txt untouched: %q", got["b.txt"])
 	}
 }
+
+// TestZipTree: a tree item mirrors a folder under Out with the paths kept,
+// cleans what carries doc blocks when asked and leaves the rest byte for
+// byte; an In item still lands flat next to it; a folder that is not one is
+// an error, an empty one a warning.
+func TestZipTree(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"source/cpu-count/cpu-count.prg":     "/*{{begin-example}}*/\r\n/*{{example: x}}*/\r\n/*{{end-example}}*/\r\nproc main\r\nreturn\r\n",
+		"source/cpu-count/cpu-count.xpj":     "[PROJECT]\r\n",
+		"source/dos-devices/dos-devices.prg": "proc main\r\nreturn\r\n",
+		"source/dos-devices/data/x.bin":      "\x00\x01\x02",
+		"README.md":                          "top",
+	}
+	for name, content := range files {
+		p := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	os.MkdirAll(filepath.Join(dir, "empty"), 0o755)
+	zp := filepath.Join(dir, "out.zip")
+	var warns []string
+	names, err := Zip(zp, []Content{
+		{Tree: filepath.Join(dir, "source"), Out: "/", Clean: true},
+		{In: []string{filepath.Join(dir, "README.md")}, Out: "/"},
+		{Tree: filepath.Join(dir, "empty"), Out: "/"},
+	}, Options{Warn: func(m string) { warns = append(warns, m) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"cpu-count/cpu-count.prg", "cpu-count/cpu-count.xpj", "dos-devices/data/x.bin", "dos-devices/dos-devices.prg", "README.md"}
+	if strings.Join(names, "|") != strings.Join(want, "|") {
+		t.Errorf("names = %v", names)
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], "no files in the tree") {
+		t.Errorf("warns = %v", warns)
+	}
+	r, err := zip.OpenReader(zp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	got := map[string]string{}
+	for _, f := range r.File {
+		rc, _ := f.Open()
+		b, _ := io.ReadAll(rc)
+		rc.Close()
+		got[f.Name] = string(b)
+	}
+	if got["cpu-count/cpu-count.prg"] != "proc main\r\nreturn\r\n" {
+		t.Errorf("the .prg was not cleaned: %q", got["cpu-count/cpu-count.prg"])
+	}
+	if got["cpu-count/cpu-count.xpj"] != "[PROJECT]\r\n" || got["dos-devices/data/x.bin"] != "\x00\x01\x02" || got["README.md"] != "top" {
+		t.Errorf("zip contents = %q", got)
+	}
+	// under a folder of the zip, and a tree that is not a folder
+	names, err = Zip(filepath.Join(dir, "sub.zip"), []Content{{Tree: filepath.Join(dir, "source"), Out: "/examples"}}, Options{})
+	if err != nil || names[0] != "examples/cpu-count/cpu-count.prg" {
+		t.Errorf("under a folder: %v %v", names, err)
+	}
+	if _, err := Zip(filepath.Join(dir, "bad.zip"), []Content{{Tree: filepath.Join(dir, "README.md"), Out: "/"}}, Options{}); err == nil {
+		t.Error("a tree that is a file must be an error")
+	}
+}

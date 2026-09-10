@@ -187,3 +187,86 @@ func TestMdInline(t *testing.T) {
 		t.Fatalf("desc value %q", m.Fields[0].Value)
 	}
 }
+
+// TestCodeCapture: begin-code ... end-code inside a composed topic turns the
+// source lines between them into one fragment - a hidden-label "code" field
+// holding them as a fence, in position - and the language is optional. A "|"
+// in that code is code, never a field separator.
+func TestCodeCapture(t *testing.T) {
+	src := "/*{{begin-topic}}*/\r\n" +
+		"/*{{topic: demo | desc: shows code }}*/\r\n" +
+		"/*{{begin-code: xbase}}*/\r\n" +
+		"proc main\r\n" +
+		"   ? {|x| x}   // a | is code here\r\n" +
+		"return\r\n" +
+		"/*{{end-code}}*/\r\n" +
+		"/*{{|note: after}}*/\r\n" +
+		"/*{{end-topic}}*/\r\n"
+	f := Scan("a.prg", []byte(src))
+	if f.Errors() != 0 {
+		t.Fatalf("issues: %+v", f.Issues)
+	}
+	tp := f.Topics[0]
+	if len(tp.Markers) != 3 {
+		t.Fatalf("markers: %d", len(tp.Markers))
+	}
+	c := tp.Markers[1]
+	if c.Kind != MkFragment || c.Line != 3 || c.EndLine != 7 || len(c.Fields) != 1 {
+		t.Fatalf("code fragment: %+v", c)
+	}
+	fd := c.Fields[0]
+	want := "```xbase\nproc main\n   ? {|x| x}   // a | is code here\nreturn\n```"
+	if fd.Label != "code" || !fd.HideLabel || fd.HideEntry || fd.Line != 3 || fd.Value != want {
+		t.Fatalf("code field: %+v", fd)
+	}
+	if n := tp.Markers[2]; n.Kind != MkFragment || n.Fields[0].Label != "note" {
+		t.Fatalf("the note after the code: %+v", n)
+	}
+	// no language: a bare fence; an empty capture is a bare fence with nothing in it
+	src = "/*{{begin-topic}}*/\r\n/*{{topic: d}}*/\r\n/*{{begin-code}}*/\r\nx\r\n/*{{end-code}}*/\r\n" +
+		"/*{{begin-code}}*/\r\n/*{{end-code}}*/\r\n/*{{end-topic}}*/\r\n"
+	f = Scan("b.prg", []byte(src))
+	if f.Errors() != 0 {
+		t.Fatalf("issues: %+v", f.Issues)
+	}
+	if v := f.Topics[0].Markers[1].Fields[0].Value; v != "```\nx\n```" {
+		t.Fatalf("bare fence: %q", v)
+	}
+	if v := f.Topics[0].Markers[2].Fields[0].Value; v != "```\n\n```" {
+		t.Fatalf("empty capture: %q", v)
+	}
+}
+
+// TestCodeCaptureIssues: what a capture refuses, each with its code.
+func TestCodeCaptureIssues(t *testing.T) {
+	cases := []struct{ src, code string }{
+		// outside any topic at all
+		{"/*{{begin-code}}*/\r\nx\r\n/*{{end-code}}*/\r\n", "content-outside-topic"},
+		// a compact topic cannot hold one
+		{"/*{{topic: d}}*/\r\n/*{{begin-code}}*/\r\nx\r\n/*{{end-code}}*/\r\n", "content-outside-topic"},
+		// before the header of its scope
+		{"/*{{begin-topic}}*/\r\n/*{{begin-code}}*/\r\nx\r\n/*{{end-code}}*/\r\n/*{{topic: d}}*/\r\n/*{{end-topic}}*/\r\n", "content-before-header"},
+		// end-code with nothing open
+		{"/*{{begin-topic}}*/\r\n/*{{topic: d}}*/\r\n/*{{end-code}}*/\r\n/*{{end-topic}}*/\r\n", "stray-end"},
+		// a second end-code
+		{"/*{{begin-topic}}*/\r\n/*{{topic: d}}*/\r\n/*{{begin-code}}*/\r\nx\r\n/*{{end-code}}*/\r\n/*{{end-code}}*/\r\n/*{{end-topic}}*/\r\n", "stray-end"},
+		// a marker inside the capture
+		{"/*{{begin-topic}}*/\r\n/*{{topic: d}}*/\r\n/*{{begin-code}}*/\r\nx\r\n/*{{|note: n}}*/\r\n/*{{end-code}}*/\r\n/*{{end-topic}}*/\r\n", "code-open"},
+		// the pair does not nest
+		{"/*{{begin-topic}}*/\r\n/*{{topic: d}}*/\r\n/*{{begin-code}}*/\r\n/*{{begin-code}}*/\r\nx\r\n/*{{end-code}}*/\r\n/*{{end-topic}}*/\r\n", "code-open"},
+		// never closed
+		{"/*{{begin-topic}}*/\r\n/*{{topic: d}}*/\r\n/*{{begin-code}}*/\r\nx\r\n", "unclosed-code"},
+	}
+	for _, c := range cases {
+		f := Scan("a.prg", []byte(c.src))
+		found := false
+		for _, is := range f.Issues {
+			if is.Code == c.code {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%q:\nwant issue %s, got %+v", c.src, c.code, f.Issues)
+		}
+	}
+}

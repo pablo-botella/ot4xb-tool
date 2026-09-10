@@ -91,7 +91,7 @@ keys, in this fixed order:
 | `vbuild` | the version script named by `versioninfo` (after it, the `<v.*>` macros see the new version) |
 | `xbmac2h` | `xbmac2h` on the given `.xbmac` |
 | `def2lib20` | `def2lib20` on the given `.def` |
-| `artefacts` | the artefacts module (release file layout); a content item with `"clean_doc_comments": true` packs the clean projection of every source carrying `/*{{ }}*/` blocks (what `srcsplit -code` would write), so a release zip ships sources without the documentation |
+| `artefacts` | the artefacts module (release file layout); a content item with `"clean_doc_comments": true` packs the clean projection of every source carrying `/*{{ }}*/` blocks (what `srcsplit -code` would write), so a release zip ships sources without the documentation; a content item with `"tree": "<folder>"` packs that folder's whole subtree under `out`, every file under its relative path, where `in` lands files flat |
 | `srcsplit` | `srcsplit` over `in` (file, glob or directory): the code projection to `code` and/or the doc projection to `doc` (`*` = the source base name); `force` overwrites, `bak` keeps a `.bak` |
 | `docs` | the documentation: with `doc_tool` (a `.doc-tool` file, see that section) the sources, database and kinds come from the file; otherwise `src` (a pattern or an ordered list of patterns - the list order is the document order, a file matched twice counts once, `*.*` is every file of a folder, a pattern matching nothing warns) and `db` are required and `root` (default: the tool dir) is the project root. The sources are compiled, resolved and rendered into `out`; `clean` (default true) removes the database and the output folder first; broken references are warnings, `strict` makes them an error |
 | *(composite)* | `cleanup.before` (delete files), then `xbmac2h`, then `copy` |
@@ -506,6 +506,13 @@ XB_END_STRUCTURE
   `{{ilink: …}}` still work there, and the two marks themselves are not
   rendered. `{{begin-md: raw}}` keeps the text byte for byte instead: no
   dedent, nothing replaced — the way to indent on purpose.
+- **Code from the source**: `/*{{begin-code: xbase}}*/` ... `/*{{end-code}}*/`
+  inside a composed topic make the source lines between them a code block of
+  that topic, at that position, in the language named after the colon
+  (optional). Those lines are code, not documentation: `split` keeps them in
+  the clean source, and in the doc projection too, between the two markers.
+  No marker may appear inside, the pair does not nest, a second `end-code`
+  is an error, and a compact topic cannot hold one.
 - **Visibility** is in the label's first and last underscore: `desc_` shows
   the value without its label, `_todo` hides the whole entry, `_slug_` is
   hidden both ways but still a field the tool reads. Only the first and the
